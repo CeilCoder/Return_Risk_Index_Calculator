@@ -39,8 +39,8 @@ class ReturnRiskIndexCalculator:
         sorted_dates = sorted(parsed.keys())
         date_objs = [datetime.datetime.strptime(d, "%Y%m%d") for d in sorted_dates]
 
-        # 计算 Rt 区间收益率, delta_t 相差天数, Rt_year 年化收益率
-        result = []
+        # 计算 Rt 区间收益率, delta_t 相差天数, Rt_year 本期年化收益率
+        result, out_string = [], []
         pre_value = None
         pre_date = None
         for i in range(len(sorted_dates)):
@@ -58,13 +58,15 @@ class ReturnRiskIndexCalculator:
                     rt = (current_value - pre_value) / pre_value
                     rt_year = rt * (365 / delta_t)
 
-            result.append((current_date_str, current_value, delta_t, rt, rt_year))
+            if rt_year is not None:
+                out_string.append(f"{current_date_str}=>{rt_year:.4f}")
+            else:
+                out_string.append(f"{current_date_str}=>null")
 
             pre_value = current_value
             pre_date = current_date_obj
 
-        df = pd.DataFrame(result, columns=["日期", "净值", "delta_t", "Rt", "Rt_year"])
-        print(df.to_string(index=False))
+        print("|".join(out_string))
 
 
     def run_method(self, method_name):
