@@ -22,5 +22,5 @@ class ReturnRiskIndexCalculator(object):
 
     def current_annualized_return_rate(self):
         """
-        计算本期年化收益率
+        计算本期年化收益率 / 测试推送
         """
