@@ -67,6 +67,7 @@ class ReturnRiskIndexCalculator:
             pre_date = current_date_obj
 
         print("|".join(out_string))
+        return "|".join(out_string)
 
 
     def run_method(self, method_name):
