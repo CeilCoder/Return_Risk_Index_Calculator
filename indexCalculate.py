@@ -5,6 +5,7 @@
 @File : indexCalculate.py
 @IDE  : PyCharm
 """
+import calendar
 from datetime import timedelta
 
 from pyspark.sql import SparkSession
@@ -20,60 +21,30 @@ import argparse
 
 logger = logging.getLogger()
 
-INPUT_STR = "20250309^1,20250310^3,20250311^3,20250312^9,20250313^7,20250314^4,20250315^1,20250316^1,20250317^7,20250318^3,20250319^7,20250320^3,20250321^8,20250322^7,20250323^1,20250324^3,20250325^2,20250326^8,20250327^9,20250328^1,20250329^1,20250330^3,20250331^7,20250401^6"
+INPUT_STR = "20250301^6,20250302^6,20250303^2,20250304^2,20250305^8,20250306^5,20250307^8,20250308^3,20250309^1,20250310^3,20250311^3,20250312^9,20250313^7,20250314^4,20250315^1,20250316^1,20250317^7,20250318^3,20250319^7,20250320^3,20250321^8,20250322^7,20250323^1,20250324^3,20250325^2,20250326^8,20250327^9,20250328^1,20250329^1,20250330^3,20250331^7,20250401^6"
 WINDOWS = [7, 14, 30, 90, 182, 365, 730, 1095, 0] # 窗口周期
+
 
 class ReturnRiskIndexCalculator:
 
-    def current_annualized_return_rate(self, windows=None):
+    def annualized_return(self, windows=None):
         """
-        计算本期年化收益率 / 测试从GitHub拉取代码
+        计算 周期年化收益率 和 周期以来的年化收益率
         """
-        if windows is None:
-            windows = WINDOWS
-        input_str = INPUT_STR
-        input_list = input_str.split(",")
-        # 解析为(date_str, value)的格式，并转换为字典方便查找
-        parsed = {}
-        for i in input_list:
-            date_str, value_str = i.split("^")
-            parsed[date_str] = float(value_str)
 
-        # 按日期排序
-        sorted_dates = sorted(parsed.keys())
-        date_objs = [datetime.datetime.strptime(d, "%Y%m%d") for d in sorted_dates]
+        # 年化收益率计算公式
+        def calculate_rt_year(current_value, base_value, delta_days):
+            if delta_days > 0:
+                return ((current_value - base_value) / base_value) * (365 / delta_days)
+            return None
 
-        # 计算 Rt 区间收益率, delta_t 相差天数, Rt_year 本期年化收益率
-        result, out_string = [], []
-        pre_value = None
-        pre_date = None
-        for i in range(len(sorted_dates)):
-            current_date_str = sorted_dates[i]
-            current_date_obj = date_objs[i]
-            current_value = parsed[current_date_str]
-
-            rt_year = None
-
-            if pre_value is not None and pre_date is not None:
-                delta_t = (current_date_obj - pre_date).days
-                if delta_t > 0:
-                    rt_year = ((current_value - pre_value) / pre_value) * (365 / delta_t)
-
-            if rt_year is not None:
-                out_string.append(f"{current_date_str}=>d_curr:{rt_year:.4f}")
+        # 空值处理
+        def format_with_null(value, prefix):
+            if value is not None:
+                return f"{prefix}:{value:.4f}"
             else:
-                out_string.append(f"{current_date_str}=>null")
+                return f"{prefix}:null"
 
-            pre_value = current_value
-            pre_date = current_date_obj
-
-        print("|".join(out_string))
-        return "|".join(out_string)
-
-    def period_annualized_return(self, windows=None):
-        """
-        计算周期年化收益率
-        """
         if windows is None:
             windows = WINDOWS
         input_str = INPUT_STR
@@ -89,7 +60,7 @@ class ReturnRiskIndexCalculator:
         date_objs = [datetime.datetime.strptime(d, "%Y%m%d") for d in sorted_dates]
         value_list = [parsed[d] for d in sorted_dates]
 
-        # 计算 Rt 区间收益率, delta_t 相差天数, Rt_year 本期年化收益率
+        # 本期年化收益率 --> 计算 Rt 区间收益率, delta_t 相差天数, Rt_year 本期年化收益率
         result, out_string = [], []
         pre_value = None
         pre_date = None
@@ -100,8 +71,20 @@ class ReturnRiskIndexCalculator:
 
             result_list = []
 
+            if pre_value is not None and pre_date is not None:
+                delta_t = (current_date_obj - pre_date).days
+                if delta_t > 0:
+                    rt_year_curr = calculate_rt_year(current_value, pre_value, delta_t)
+                    result_list.append(format_with_null(rt_year_curr, "d_curr"))
+            else:
+                result_list.append(format_with_null(None, "d_curr"))
+
+            pre_value = current_value
+            pre_date = current_date_obj
+
+        # 周期年化收益率 --> 计算 Rt 区间收益率, delta_t 相差天数, Rt_year 本期年化收益率
             for win in windows:
-                # 全历史需要根据逻辑修改
+                # 成立以来的年化收益率需要根据逻辑修改
                 if win == 0:
                     result_list.append(f"d_{win}:{0.0}")
                     continue
@@ -119,12 +102,57 @@ class ReturnRiskIndexCalculator:
                 # 根据周期算出周期年化收益率
                 else:
                     earliest_date = sorted(candidates, key=lambda x: x[0])
+                    delta_t = (current_date_obj - earliest_date[0][0]).days
                     fnv_t_0 = earliest_date[0][1]
-                    rt_1 = (current_value - fnv_t_0) / fnv_t_0
-                    result_list.append(f"d_{win}:{rt_1}")
+                    rt_year_win = calculate_rt_year(current_value, fnv_t_0, delta_t)
+                    result_list.append(format_with_null(rt_year_win, f"d_{win}"))
+
+
+        # 周期以来的年化收益率 --> 计算 Rt 区间收益率, delta_t 相差天数, Rt_year 本期年化收益率
+
+            # 处理日期，取上月末、上季度末、上年末
+            # 上月末
+            month_since_begin = current_date_obj.replace(day=1) - timedelta(days=1)
+            # 上季度末
+            prev_quarter = ((current_date_obj.month - 1) // 3 + 1) - 1
+            if prev_quarter == 0:
+                prev_quarter = 4
+                year = current_date_obj.year - 1
+            else:
+                year = current_date_obj.year
+
+            quarter_to_month = {1: 3, 2: 6, 3: 9, 4: 12}
+            last_month_of_quarter = quarter_to_month[prev_quarter]
+            _, last_day_of_quarter = calendar.monthrange(year, last_month_of_quarter)
+            quarter_since_begin = datetime.datetime(year, last_month_of_quarter, last_day_of_quarter, 0, 0, 0)
+            # 上年末
+            year_since_begin = current_date_obj.replace(day=1, month=1) - timedelta(days=1)
+
+            # 二分查找，查找当前区间最小日期到当前的取值
+            idx_month = bisect.bisect_left(date_objs, month_since_begin)
+            idx_quarter = bisect.bisect_left(date_objs, quarter_since_begin)
+            idx_year = bisect.bisect_left(date_objs, year_since_begin)
+            idx_current = bisect.bisect_left(date_objs, current_date_obj)
+            month_candidates = [(date_objs[i], value_list[i]) for i in range(idx_month, idx_current)]
+            quarter_candidates = [(date_objs[i], value_list[i]) for i in range(idx_quarter, idx_current)]
+            year_candidates = [(date_objs[i], value_list[i]) for i in range(idx_year, idx_current)]
+
+            delta_t_month = (current_date_obj - date_objs[idx_month]).days
+            delta_t_quarter = (current_date_obj - date_objs[idx_quarter]).days
+            delta_t_year = (current_date_obj - date_objs[idx_year]).days
+
+            rt_year_monthly = calculate_rt_year(current_value, value_list[idx_month], delta_t_month)
+            rt_year_quarter = calculate_rt_year(current_value, value_list[idx_quarter], delta_t_quarter)
+            rt_year_yearly = calculate_rt_year(current_value, value_list[idx_year], delta_t_year)
+
+            result_list.append(format_with_null(rt_year_monthly, "d_month"))
+            result_list.append(format_with_null(rt_year_quarter, "d_quarter"))
+            result_list.append(format_with_null(rt_year_yearly, "d_year"))
 
             result_string = ";".join(result_list)
             out_string.append(f"{current_date_str}=>{result_string}")
+
+
         print("|".join(out_string))
         return "|".join(out_string)
 
