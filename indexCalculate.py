@@ -27,6 +27,22 @@ WINDOWS = [7, 14, 30, 90, 182, 365, 730, 1095, 0] # 窗口周期
 
 class ReturnRiskIndexCalculator:
 
+    # 计算上季度末的日期
+    def get_quarter_days(self, current_date):
+        prev_quarter = ((current_date.month - 1) // 3 + 1) - 1
+        if prev_quarter == 0:
+            prev_quarter = 4
+            year = current_date.year - 1
+        else:
+            year = current_date.year
+
+        quarter_to_month = {1: 3, 2: 6, 3: 9, 4: 12}
+        last_month_of_quarter = quarter_to_month[prev_quarter]
+        _, last_day_of_quarter = calendar.monthrange(year, last_month_of_quarter)
+        quarter_since_begin = datetime.datetime(year, last_month_of_quarter, last_day_of_quarter, 0, 0, 0)
+
+        return quarter_since_begin
+
     def annualized_return(self, windows=None):
         """
         计算 周期年化收益率 和 周期以来的年化收益率
@@ -114,17 +130,7 @@ class ReturnRiskIndexCalculator:
             # 上月末
             month_since_begin = current_date_obj.replace(day=1) - timedelta(days=1)
             # 上季度末
-            prev_quarter = ((current_date_obj.month - 1) // 3 + 1) - 1
-            if prev_quarter == 0:
-                prev_quarter = 4
-                year = current_date_obj.year - 1
-            else:
-                year = current_date_obj.year
-
-            quarter_to_month = {1: 3, 2: 6, 3: 9, 4: 12}
-            last_month_of_quarter = quarter_to_month[prev_quarter]
-            _, last_day_of_quarter = calendar.monthrange(year, last_month_of_quarter)
-            quarter_since_begin = datetime.datetime(year, last_month_of_quarter, last_day_of_quarter, 0, 0, 0)
+            quarter_since_begin = ReturnRiskIndexCalculator.get_quarter_days(self, current_date=current_date_obj)
             # 上年末
             year_since_begin = current_date_obj.replace(day=1, month=1) - timedelta(days=1)
 
@@ -132,10 +138,6 @@ class ReturnRiskIndexCalculator:
             idx_month = bisect.bisect_left(date_objs, month_since_begin)
             idx_quarter = bisect.bisect_left(date_objs, quarter_since_begin)
             idx_year = bisect.bisect_left(date_objs, year_since_begin)
-            idx_current = bisect.bisect_left(date_objs, current_date_obj)
-            month_candidates = [(date_objs[i], value_list[i]) for i in range(idx_month, idx_current)]
-            quarter_candidates = [(date_objs[i], value_list[i]) for i in range(idx_quarter, idx_current)]
-            year_candidates = [(date_objs[i], value_list[i]) for i in range(idx_year, idx_current)]
 
             delta_t_month = (current_date_obj - date_objs[idx_month]).days
             delta_t_quarter = (current_date_obj - date_objs[idx_quarter]).days
@@ -157,12 +159,79 @@ class ReturnRiskIndexCalculator:
         return "|".join(out_string)
 
 
+    def valuation_count(self, windows=None):
+        """
+        估值次数计算
+        """
+
+        windows = WINDOWS
+        input_str = INPUT_STR
+        input_list = input_str.split(",")
+        parsed = {}
+        for i in input_list:
+            date_str, value_str = i.split("^")
+            parsed[date_str] = float(value_str)
+        # 按日期排序
+        sorted_dates = sorted(parsed.keys())
+        date_objs = [datetime.datetime.strptime(d, "%Y%m%d") for d in sorted_dates]
+
+        result, out_string = [], []
+
+        for i in range(1, (len(sorted_dates) + 1)):
+            current_date_str = sorted_dates[i - 1]
+            current_date_obj = date_objs[i - 1]
+
+            result_list = []
+
+            for win in windows:
+                if win == 0:
+                    value_counts = len(date_objs[:i])
+                    result_list.append(f"d_all:{value_counts}")
+                    continue
+                target_start_date = current_date_obj - timedelta(days=win)
+                candidates = [v for v in date_objs[:i] if target_start_date <= v <= current_date_obj]
+                if not candidates:
+                    result_list.append(f"d_{win}:null")
+                else:
+                    value_counts = len(candidates)
+                    result_list.append(f"d_{win}:{value_counts}")
+
+            # 处理日期，取上月末、上季度末、上年末
+            # 上月末
+            month_since_begin = current_date_obj.replace(day=1) - timedelta(days=1)
+            # 上季度末
+            quarter_since_begin = ReturnRiskIndexCalculator.get_quarter_days(self, current_date=current_date_obj)
+            # 上年末
+            year_since_begin = current_date_obj.replace(day=1, month=1) - timedelta(days=1)
+
+            idx_month = bisect.bisect_left(date_objs, month_since_begin)
+            idx_quarter = bisect.bisect_left(date_objs, quarter_since_begin)
+            idx_year = bisect.bisect_left(date_objs, year_since_begin)
+            idx_current = bisect.bisect_left(date_objs, current_date_obj)
+            value_counts_month = len(date_objs[idx_month:idx_current + 1])
+            value_counts_quarter = len(date_objs[idx_quarter:idx_current + 1])
+            value_counts_year = len(date_objs[idx_year:idx_current + 1])
+            result_list.append(f"d_month:{value_counts_month}")
+            result_list.append(f"d_quarter:{value_counts_quarter}")
+            result_list.append(f"d_year:{value_counts_year}")
+            # current是当前日期，date_obj[idx_month]是列表中离上月末最近的日期，month_since_begin是上月末
+            # print(current_date_obj, value_counts_month, value_counts_quarter, value_counts_year)
+
+
+
+            result_string = ";".join(result_list)
+            out_string.append(f"{current_date_str}=>{result_string}")
+
+        print("|".join(out_string))
+        return "|".join(out_string)
+
     def run_method(self, method_name):
         if hasattr(self, method_name):
             method = getattr(self, method_name)
             method()
         else:
             print(f"Method {method_name} does not exist.")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run a specific method of ReturnRiskIndexCalculator")
