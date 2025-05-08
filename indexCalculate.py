@@ -43,192 +43,219 @@ class ReturnRiskIndexCalculator:
 
         return quarter_since_begin
 
+    # 计算区间收益率
+    def calculate_interval_return(self, current_value, base_value):
+        return (current_value - base_value) / base_value
+
     def annualized_return(self, windows=None):
         """
-        计算 周期年化收益率 和 周期以来的年化收益率
+        年化收益率计算
         """
-
-        # 年化收益率计算公式
-        def calculate_rt_year(current_value, base_value, delta_days):
-            if delta_days > 0:
-                return ((current_value - base_value) / base_value) * (365 / delta_days)
-            return None
-
-        # 空值处理
-        def format_with_null(value, prefix):
-            if value is not None:
-                return f"{prefix}:{value:.4f}"
-            else:
-                return f"{prefix}:null"
-
         if windows is None:
             windows = WINDOWS
+
         input_str = INPUT_STR
         input_list = input_str.split(",")
-        # 解析为(date_str, value)的格式，并转换为字典方便查找
+
         parsed = {}
         for i in input_list:
             date_str, value_str = i.split("^")
             parsed[date_str] = float(value_str)
 
-        # 按日期排序
         sorted_dates = sorted(parsed.keys())
         date_objs = [datetime.datetime.strptime(d, "%Y%m%d") for d in sorted_dates]
         value_list = [parsed[d] for d in sorted_dates]
 
-        # 本期年化收益率 --> 计算 Rt 区间收益率, delta_t 相差天数, Rt_year 本期年化收益率
-        result, out_string = [], []
-        pre_value = None
-        pre_date = None
+        result_data = []
+        out_string = []
+
+        def calculate_rt_year(current_value, base_value, delta_days):
+            if delta_days > 0 and base_value != 0:
+                return (current_value - base_value) / base_value * (365 / delta_days)
+            return None
+
         for i in range(len(sorted_dates)):
             current_date_str = sorted_dates[i]
             current_date_obj = date_objs[i]
             current_value = parsed[current_date_str]
 
-            result_list = []
+            row = {"Date": current_date_str}
 
-            if pre_value is not None and pre_date is not None:
-                delta_t = (current_date_obj - pre_date).days
-                if delta_t > 0:
-                    rt_year_curr = calculate_rt_year(current_value, pre_value, delta_t)
-                    result_list.append(format_with_null(rt_year_curr, "d_curr"))
+            # 当前收益率（与前一天比较）
+            if i > 0:
+                delta_t = (current_date_obj - date_objs[i - 1]).days
+                rt_curr = calculate_rt_year(current_value, value_list[i - 1], delta_t)
+                row["d_curr"] = rt_curr
             else:
-                result_list.append(format_with_null(None, "d_curr"))
+                row["d_curr"] = None
 
-            pre_value = current_value
-            pre_date = current_date_obj
-
-        # 周期年化收益率 --> 计算 Rt 区间收益率, delta_t 相差天数, Rt_year 本期年化收益率
+            # 周期年化收益
             for win in windows:
-                # 成立以来的年化收益率需要根据逻辑修改
                 if win == 0:
-                    result_list.append(f"d_{win}:{0.0}")
+                    row[f"d_{win}"] = 0.0
                     continue
 
                 target_start_date = current_date_obj - timedelta(days=win)
-                # 找出小于等于 current_date，大于等于 target_start_date 的所有日期中最小的那个
-                candidates = []
-                for j in range(i):
-                    if current_date_obj > date_objs[j] >= target_start_date:
-                        candidates.append((date_objs[j], value_list[j]))
+                candidates = [(date_objs[j], value_list[j]) for j in range(i) if date_objs[j] >= target_start_date]
 
                 if not candidates:
-                    result_list.append(f"d_{win}:null")
-
-                # 根据周期算出周期年化收益率
+                    row[f"d_{win}"] = None
                 else:
-                    earliest_date = sorted(candidates, key=lambda x: x[0])
-                    delta_t = (current_date_obj - earliest_date[0][0]).days
-                    fnv_t_0 = earliest_date[0][1]
-                    rt_year_win = calculate_rt_year(current_value, fnv_t_0, delta_t)
-                    result_list.append(format_with_null(rt_year_win, f"d_{win}"))
+                    candidates.sort(key=lambda x: x[0])  # 按日期升序排序
+                    earliest_date, base_value = candidates[0]
+                    delta_t = (current_date_obj - earliest_date).days
+                    rt_win = calculate_rt_year(current_value, base_value, delta_t)
+                    row[f"d_{win}"] = rt_win
 
-
-        # 周期以来的年化收益率 --> 计算 Rt 区间收益率, delta_t 相差天数, Rt_year 本期年化收益率
-
-            # 处理日期，取上月末、上季度末、上年末
-            # 上月末
+            # 上月/上季/上年以来收益
             month_since_begin = current_date_obj.replace(day=1) - timedelta(days=1)
-            # 上季度末
-            quarter_since_begin = ReturnRiskIndexCalculator.get_quarter_days(self, current_date=current_date_obj)
-            # 上年末
-            year_since_begin = current_date_obj.replace(day=1, month=1) - timedelta(days=1)
+            quarter_since_begin = self.get_quarter_days(current_date=current_date_obj)
+            year_since_begin = current_date_obj.replace(month=1, day=1) - timedelta(days=1)
 
-            # 二分查找，查找当前区间最小日期到当前的取值
             idx_month = bisect.bisect_left(date_objs, month_since_begin)
             idx_quarter = bisect.bisect_left(date_objs, quarter_since_begin)
             idx_year = bisect.bisect_left(date_objs, year_since_begin)
 
-            delta_t_month = (current_date_obj - date_objs[idx_month]).days
-            delta_t_quarter = (current_date_obj - date_objs[idx_quarter]).days
-            delta_t_year = (current_date_obj - date_objs[idx_year]).days
+            def safe_get(lst, index):
+                try:
+                    return lst[index]
+                except IndexError:
+                    return None
 
-            rt_year_monthly = calculate_rt_year(current_value, value_list[idx_month], delta_t_month)
-            rt_year_quarter = calculate_rt_year(current_value, value_list[idx_quarter], delta_t_quarter)
-            rt_year_yearly = calculate_rt_year(current_value, value_list[idx_year], delta_t_year)
+            row["d_month"] = calculate_rt_year(current_value, safe_get(value_list, idx_month),
+                                               (current_date_obj - safe_get(date_objs,
+                                                                            idx_month)).days if idx_month < len(
+                                                   date_objs) else 0)
+            row["d_quarter"] = calculate_rt_year(current_value, safe_get(value_list, idx_quarter),
+                                                 (current_date_obj - safe_get(date_objs,
+                                                                              idx_quarter)).days if idx_quarter < len(
+                                                     date_objs) else 0)
+            row["d_year"] = calculate_rt_year(current_value, safe_get(value_list, idx_year),
+                                              (current_date_obj - safe_get(date_objs, idx_year)).days if idx_year < len(
+                                                  date_objs) else 0)
 
-            result_list.append(format_with_null(rt_year_monthly, "d_month"))
-            result_list.append(format_with_null(rt_year_quarter, "d_quarter"))
-            result_list.append(format_with_null(rt_year_yearly, "d_year"))
+            result_data.append(row)
 
-            result_string = ";".join(result_list)
-            out_string.append(f"{current_date_str}=>{result_string}")
+        # 构造 DataFrame
+        df = pd.DataFrame(result_data)
 
+        # 构造字符串输出
+        def format_with_null(val, prefix):
+            if val is None:
+                return f"{prefix}:null"
+            elif isinstance(val, (int, float)):
+                return f"{prefix}:{val:.4f}"
+            else:
+                return f"{prefix}:{val}"
 
-        print("|".join(out_string))
-        return "|".join(out_string)
+        for _, row in df.iterrows():
+            formatted = [
+                format_with_null(row[col], col) for col in df.columns if col != "Date"
+            ]
+            out_string.append(f"{row['Date']}=>{';'.join(formatted)}")
 
+        return df, "|".join(out_string)
 
     def valuation_count(self, windows=None):
         """
         估值次数计算
         """
+        if windows is None:
+            windows = WINDOWS  # 示例窗口期，可根据实际情况调整
 
-        windows = WINDOWS
-        input_str = INPUT_STR
+        input_str = INPUT_STR  # 示例输入字符串，请替换为实际的INPUT_STR
         input_list = input_str.split(",")
+
         parsed = {}
         for i in input_list:
             date_str, value_str = i.split("^")
             parsed[date_str] = float(value_str)
-        # 按日期排序
+
         sorted_dates = sorted(parsed.keys())
         date_objs = [datetime.datetime.strptime(d, "%Y%m%d") for d in sorted_dates]
+        value_list = [parsed[d] for d in sorted_dates]
 
-        result, out_string = [], []
+        result_data = []
+        out_string = []
 
-        for i in range(1, (len(sorted_dates) + 1)):
-            current_date_str = sorted_dates[i - 1]
-            current_date_obj = date_objs[i - 1]
+        for i in range(len(sorted_dates)):
+            current_date_str = sorted_dates[i]
+            current_date_obj = date_objs[i]
+            row = {"Date": current_date_str}
 
             result_list = []
 
             for win in windows:
                 if win == 0:
-                    value_counts = len(date_objs[:i])
-                    result_list.append(f"d_all:{value_counts}")
+                    count = i + 1
+                    row[f"d_all"] = count
+                    result_list.append(f"d_all:{count}")
                     continue
-                target_start_date = current_date_obj - timedelta(days=win)
-                candidates = [v for v in date_objs[:i] if target_start_date <= v <= current_date_obj]
-                if not candidates:
-                    result_list.append(f"d_{win}:null")
-                else:
-                    value_counts = len(candidates)
-                    result_list.append(f"d_{win}:{value_counts}")
 
-            # 处理日期，取上月末、上季度末、上年末
-            # 上月末
+                target_start_date = current_date_obj - timedelta(days=win)
+                candidates = [(date_objs[j], value_list[j]) for j in range(i + 1) if date_objs[j] >= target_start_date]
+
+                count = len(candidates)
+                row[f"d_{win}"] = count
+                result_list.append(f"d_{win}:{count}")
+
+            # 处理月/季度/年
             month_since_begin = current_date_obj.replace(day=1) - timedelta(days=1)
-            # 上季度末
-            quarter_since_begin = ReturnRiskIndexCalculator.get_quarter_days(self, current_date=current_date_obj)
-            # 上年末
-            year_since_begin = current_date_obj.replace(day=1, month=1) - timedelta(days=1)
+            quarter_since_begin = self.get_quarter_days(current_date=current_date_obj)
+            year_since_begin = current_date_obj.replace(month=1, day=1) - timedelta(days=1)
 
             idx_month = bisect.bisect_left(date_objs, month_since_begin)
             idx_quarter = bisect.bisect_left(date_objs, quarter_since_begin)
             idx_year = bisect.bisect_left(date_objs, year_since_begin)
-            idx_current = bisect.bisect_left(date_objs, current_date_obj)
-            value_counts_month = len(date_objs[idx_month:idx_current + 1])
-            value_counts_quarter = len(date_objs[idx_quarter:idx_current + 1])
-            value_counts_year = len(date_objs[idx_year:idx_current + 1])
-            result_list.append(f"d_month:{value_counts_month}")
-            result_list.append(f"d_quarter:{value_counts_quarter}")
-            result_list.append(f"d_year:{value_counts_year}")
-            # current是当前日期，date_obj[idx_month]是列表中离上月末最近的日期，month_since_begin是上月末
-            # print(current_date_obj, value_counts_month, value_counts_quarter, value_counts_year)
+
+            def safe_get(lst, index):
+                try:
+                    return lst[index]
+                except IndexError:
+                    return None
+
+            count_month = len(date_objs[idx_month:i + 1])
+            count_quarter = len(date_objs[idx_quarter:i + 1])
+            count_year = len(date_objs[idx_year:i + 1])
+
+            row["d_month"] = count_month
+            row["d_quarter"] = count_quarter
+            row["d_year"] = count_year
+
+            result_list.append(f"d_month:{count_month}")
+            result_list.append(f"d_quarter:{count_quarter}")
+            result_list.append(f"d_year:{count_year}")
+
+            result_data.append(row)
+            out_string.append(f"{current_date_str}=>{';'.join(result_list)}")
+
+        df = pd.DataFrame(result_data)
+        return df, "|".join(out_string)
 
 
+    def annualized_volatility(self, windows=None):
+        """
+        计算年化波动率
+        """
+        # if windows is None:
+        #     windows = WINDOWS
+        # else:
+        windows = [30]
+        valuation_count_str = ReturnRiskIndexCalculator.valuation_count(self, windows)
+        valuation_count = valuation_count_str.split("|")
+        d_30_value = []
+        for v in valuation_count:
+            d_30_value
 
-            result_string = ";".join(result_list)
-            out_string.append(f"{current_date_str}=>{result_string}")
-
-        print("|".join(out_string))
-        return "|".join(out_string)
 
     def run_method(self, method_name):
         if hasattr(self, method_name):
             method = getattr(self, method_name)
-            method()
+            df, str_result = method()
+            print("===============================================String result===============================================")
+            print(str_result)
+            print("===============================================DataFrame result===============================================")
+            print(df)
         else:
             print(f"Method {method_name} does not exist.")
 
