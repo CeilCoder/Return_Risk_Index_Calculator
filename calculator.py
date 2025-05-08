@@ -126,6 +126,7 @@ class ReturnRiskIndexCalculator:
         """
         计算近1个月的年化波动率
         """
+        volatility_list = []
         volatility_series = pd.Series(dtype='float64')
 
         for i in range(len(self.net_values_series)):
@@ -145,5 +146,7 @@ class ReturnRiskIndexCalculator:
 
             volatility = np.sqrt(((r_t_day - r_day_bar) ** 2).sum() / (len(r_t_day) - 1)) * np.sqrt(365)
             volatility_series[end_date] = round(volatility, 4)
+            volatility_list.append([i, volatility])
+        volatility_df = pd.DataFrame(volatility_list, columns=['Date', 'annualized_volatility_1m'])
 
-        return volatility_series.rename("AnnualizedVolatility")
+        return volatility_df
