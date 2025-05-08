@@ -1,6 +1,7 @@
 # return_calculator/calculator.py
 
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 import bisect
 from utils import calculate_interval_return, annualized_return, get_quarter_days
@@ -120,3 +121,48 @@ class ReturnRiskIndexCalculator:
 
         df = pd.DataFrame(result_data)
         return df, "|".join(out_strings)
+
+    def annualized_volatility(self, product_start_date=None):
+        """
+        计算近1个月的年化波动率
+        """
+
+        # 确保索引是 datetime 类型
+        if not isinstance(self.net_values_series.index, pd.DatetimeIndex):
+            self.net_values_series.index = pd.to_datetime(self.net_values_series.index)
+
+        end_date = self.net_values_series.index[-1]
+        start_date = end_date - timedelta(days=30)
+
+        if product_start_date is not None:
+            if not isinstance(product_start_date, pd.Timestamp):
+                product_start_date = pd.to_datetime(product_start_date)
+            start_date = max(start_date, product_start_date)
+
+        # 过滤近30天的数据
+        filtered_df = self.net_values_series[
+            (self.net_values_series.index >= start_date) &
+            (self.net_values_series.index <= end_date)
+            ]
+
+        # 如果近1月净值估值次数小于12，则不进行计算
+        if len(filtered_df) < 12:
+            return None
+
+        # 计算每日收益率
+        returns = filtered_df.pct_change().dropna()
+
+        # 计算日化收益率（注意这里使用的是 index.diff）
+        date_diff_days = (
+            pd.Series(filtered_df.index).diff().dt.days.replace(0, np.nan).fillna(1)
+        )
+
+        r_t_day = returns / date_diff_days.values[1:]  # 因为 pct_change() 第一个是 NaN
+
+        # 计算平均日化收益率
+        r_day_bar = r_t_day.mean()
+
+        # 年化波动率公式
+        volatility = np.sqrt(((r_t_day - r_day_bar) ** 2).sum() / (len(r_t_day) - 1)) * np.sqrt(365)
+
+        return volatility

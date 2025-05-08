@@ -1,6 +1,7 @@
 from data_parser import parse_input_to_series
 from calculator import ReturnRiskIndexCalculator
 from config import INPUT_STR
+import pandas as pd
 
 
 def main():
@@ -18,6 +19,10 @@ def main():
     # 估值次数计算
     valuation_df, valuation_output = calculator.count_valuation()
     print("Valuation Count DataFrame:\n", valuation_df)
+
+    # 年化波动率计算
+    volatility = calculator.annualized_volatility(product_start_date=pd.to_datetime('2025-03-02'))
+    print(f"近1月年化波动率为: {volatility}")
 
 
 if __name__ == "__main__":
