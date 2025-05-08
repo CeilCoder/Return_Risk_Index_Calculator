@@ -26,6 +26,67 @@ WINDOWS = [7, 14, 30, 90, 182, 365, 730, 1095, 0] # 窗口周期
 
 
 class ReturnRiskIndexCalculator:
+    def __init__(self, input_str):
+        self.input_str = input_str
+        self.parsed_dict = self._parse_input()
+
+    def _parse_input(self):
+        """ 解析输入字符串为日期 -> 净值的字典 """
+        parsed = {}
+        for item in self.input_str.split(","):
+            date_str, value_str = item.split("^")
+            parsed[date_str] = float(value_str)
+        return parsed
+
+    def calculate_interval_return(self, current_value, base_value):
+        """ 安全计算区间收益率，处理除零错误 """
+        if base_value == 0:
+            return None
+        return (current_value - base_value) / base_value
+
+    def calculate_period_return(self, start_date, end_date):
+        """
+        计算指定时间段的区间收益率
+        :param start_date: 起始日期 (str, 格式 YYYYMMDD)
+        :param end_date: 结束日期 (str, 格式 YYYYMMDD)
+        :return: 区间收益率 (float or None)
+        """
+        if start_date not in self.parsed_dict or end_date not in self.parsed_dict:
+            return None
+
+        base_value = self.parsed_dict[start_date]
+        current_value = self.parsed_dict[end_date]
+
+        return self.calculate_interval_return(current_value, base_value)
+
+    def batch_calculate_returns(self):
+        """
+        批量计算所有相邻日期间的区间收益率
+        :return: DataFrame + 字符串格式结果
+        """
+        sorted_dates = sorted(self.parsed_dict.keys())
+        result_data = []
+        out_string = []
+
+        for i in range(1, len(sorted_dates)):
+            prev_date = sorted_dates[i - 1]
+            curr_date = sorted_dates[i]
+            prev_value = self.parsed_dict[prev_date]
+            curr_value = self.parsed_dict[curr_date]
+
+            interval_return = self.calculate_interval_return(curr_value, prev_value)
+
+            result_data.append({
+                "Start Date": prev_date,
+                "End Date": curr_date,
+                "Interval Return": interval_return
+            })
+
+            return_str = f"{interval_return:.4f}" if interval_return is not None else "null"
+            out_string.append(f"{prev_date}~{curr_date}:{return_str}")
+
+        df = pd.DataFrame(result_data)
+        return df, "|".join(out_string)
 
     # 计算上季度末的日期
     def get_quarter_days(self, current_date):
@@ -42,10 +103,6 @@ class ReturnRiskIndexCalculator:
         quarter_since_begin = datetime.datetime(year, last_month_of_quarter, last_day_of_quarter, 0, 0, 0)
 
         return quarter_since_begin
-
-    # 计算区间收益率
-    def calculate_interval_return(self, current_value, base_value):
-        return (current_value - base_value) / base_value
 
     def annualized_return(self, windows=None):
         """
@@ -232,20 +289,51 @@ class ReturnRiskIndexCalculator:
         df = pd.DataFrame(result_data)
         return df, "|".join(out_string)
 
+    def annualized_volatility(self):
+        # 获取估值次数和字符串结果（这里只用到df）
+        valuation_df, _ = self.valuation_count(windows=[30])
 
-    def annualized_volatility(self, windows=None):
-        """
-        计算年化波动率
-        """
-        # if windows is None:
-        #     windows = WINDOWS
-        # else:
-        windows = [30]
-        valuation_count_str = ReturnRiskIndexCalculator.valuation_count(self, windows)
-        valuation_count = valuation_count_str.split("|")
-        d_30_value = []
-        for v in valuation_count:
-            d_30_value
+        # 获取每日收益率数据
+        return_df, _ = self.annualized_return(windows=[30])
+
+        # 合并两个DataFrame，确保按日期对齐
+        df_merged = pd.merge(valuation_df[['Date', 'd_30']], return_df[['Date', 'd_curr']], on='Date', how='left')
+        df_merged.rename(columns={'d_30': 'monthly_count', 'd_curr': 'daily_return'}, inplace=True)
+        print(df_merged)
+
+        result_data = []
+        out_string = []
+
+        for idx, row in df_merged.iterrows():
+            current_date = row['Date']
+            monthly_count = row['monthly_count']
+            daily_return = row['daily_return']
+
+            volatility_annualized = None
+
+            if pd.notna(monthly_count) and monthly_count >= 12:
+                # 收集过去一个月的每日收益率
+                window_returns = df_merged.loc[:idx, 'daily_return'].dropna()
+
+                # 检查是否有足够的有效值
+                if len(window_returns) >= 12:
+                    std_daily = window_returns.std()
+                    volatility_annualized = std_daily * (252 ** 0.5)
+
+            result_data.append({
+                "Date": current_date,
+                "volatility_annualized": volatility_annualized
+            })
+
+            # 构建字符串输出格式
+            vol_value = f"{volatility_annualized:.4f}" if volatility_annualized is not None else "null"
+            out_string.append(f"{current_date}=>volatility_annualized:{vol_value}")
+
+        # 构造DataFrame
+        volatility_df = pd.DataFrame(result_data)
+
+        # 返回 DataFrame 和字符串格式
+        return volatility_df, "|".join(out_string)
 
 
     def run_method(self, method_name):
