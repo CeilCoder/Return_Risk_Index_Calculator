@@ -15,6 +15,10 @@ def main():
     annualized_returns_df = calculator.annualized_return()
     print("Annualized Returns:\n", annualized_returns_df)
 
+    # 估值次数计算
+    valuation_df, valuation_output = calculator.count_valuation()
+    print("Valuation Count DataFrame:\n", valuation_df)
+
 
 if __name__ == "__main__":
     main()
