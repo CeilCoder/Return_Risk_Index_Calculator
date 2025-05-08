@@ -16,5 +16,9 @@ class TestReturnRiskIndexCalculator(unittest.TestCase):
         df = self.calculator.annualized_return()
         self.assertIn('d_curr', df.columns)
 
+    def test_count_valuation(self):
+        df = self.calculator.count_valuation()
+        self.assertTrue(len(df) > 0)
+
 if __name__ == '__main__':
     unittest.main()
