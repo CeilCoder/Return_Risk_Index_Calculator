@@ -122,47 +122,28 @@ class ReturnRiskIndexCalculator:
         df = pd.DataFrame(result_data)
         return df, "|".join(out_strings)
 
-    def annualized_volatility(self, product_start_date=None):
+    def annualized_volatility(self, windows=30, min_points=12):
         """
         计算近1个月的年化波动率
         """
+        volatility_series = pd.Series(dtype='float64')
 
-        # 确保索引是 datetime 类型
-        if not isinstance(self.net_values_series.index, pd.DatetimeIndex):
-            self.net_values_series.index = pd.to_datetime(self.net_values_series.index)
+        for i in range(len(self.net_values_series)):
+            end_date = self.net_values_series.index[i]
+            start_date = end_date - timedelta(days=windows)
 
-        end_date = self.net_values_series.index[-1]
-        start_date = end_date - timedelta(days=30)
+            filtered = self.net_values_series.iloc[max(0, i - windows):i + 1]
 
-        if product_start_date is not None:
-            if not isinstance(product_start_date, pd.Timestamp):
-                product_start_date = pd.to_datetime(product_start_date)
-            start_date = max(start_date, product_start_date)
+            if len(filtered) < min_points:
+                volatility_series[end_date] = None
+                continue
 
-        # 过滤近30天的数据
-        filtered_df = self.net_values_series[
-            (self.net_values_series.index >= start_date) &
-            (self.net_values_series.index <= end_date)
-            ]
+            returns = filtered.pct_change().dropna()
+            date_diffs = pd.Series(filtered.index).diff().dt.days.replace(0, np.nan).fillna(1)
+            r_t_day = returns / date_diffs.iloc[1:].values
+            r_day_bar = r_t_day.mean()
 
-        # 如果近1月净值估值次数小于12，则不进行计算
-        if len(filtered_df) < 12:
-            return None
+            volatility = np.sqrt(((r_t_day - r_day_bar) ** 2).sum() / (len(r_t_day) - 1)) * np.sqrt(365)
+            volatility_series[end_date] = round(volatility, 4)
 
-        # 计算每日收益率
-        returns = filtered_df.pct_change().dropna()
-
-        # 计算日化收益率（注意这里使用的是 index.diff）
-        date_diff_days = (
-            pd.Series(filtered_df.index).diff().dt.days.replace(0, np.nan).fillna(1)
-        )
-
-        r_t_day = returns / date_diff_days.values[1:]  # 因为 pct_change() 第一个是 NaN
-
-        # 计算平均日化收益率
-        r_day_bar = r_t_day.mean()
-
-        # 年化波动率公式
-        volatility = np.sqrt(((r_t_day - r_day_bar) ** 2).sum() / (len(r_t_day) - 1)) * np.sqrt(365)
-
-        return volatility
+        return volatility_series.rename("AnnualizedVolatility")
