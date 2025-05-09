@@ -360,4 +360,72 @@ class ReturnRiskIndexCalculator:
         sharpe_df = pd.DataFrame(sharpe_data)
         return sharpe_df
 
+    # ----------- 最大回撤计算相关方法 --------------
+
+    def max_drawdown(self, input_str):
+        """
+        根据给定的输入字符串，计算每个时间点上的最大回撤，并返回DataFrame
+        参数:
+        - input_str: str，格式化的净值数据串
+        返回:
+        - DataFrame，包含日期和各窗口期的最大回撤值，格式为"最大回撤(S,T)"
+        """
+        items = input_str.split(',')
+        data_points = []
+        for item in items:
+            parts = item.split('^')
+            date_str = parts[0]
+            value = float(parts[1])
+            flag = int(parts[2]) if len(parts) >= 3 else 1
+            date_obj = datetime.strptime(date_str, "%Y%m%d")
+            data_points.append({"date": date_obj, "value": value, "flag": flag})
+
+        result_data = []
+        windows = [7, 14, 30, 91, 182, 365, 730, 1095]
+        timestamps = [dp["date"].timestamp() for dp in data_points]
+
+        for i, dp in enumerate(data_points):
+            if dp["flag"] == 0:
+                continue
+            row = {"Date": dp['date']}
+            for win in windows:
+                start_idx = self.find_window_start(timestamps, i, win)
+                if not self.is_enough_days(data_points[start_idx]["date"], dp["date"], win):
+                    row[f"D{win}"] = None
+                    continue
+                max_drawdown, s_date, t_date = self.max_drawdown_for_window(data_points, start_idx, i)
+                row[f"D{win}"] = f"{max_drawdown:.4f}(S:{s_date.strftime('%Y%m%d')},T:{dp['date'].strftime('%Y%m%d')})"
+            result_data.append(row)
+
+        return pd.DataFrame(result_data).set_index("Date")
+
+    def find_window_start(self, timestamps, end_index, window_days):
+        end_time = timestamps[end_index]
+        window_seconds = window_days * 24 * 3600
+        idx = bisect.bisect_left(timestamps, end_time - window_seconds, 0, end_index + 1)
+        return idx
+
+    def is_enough_days(self, start_date, end_date, required_days):
+        diff_days = (end_date - start_date).days
+        return diff_days >= required_days
+
+    def max_drawdown_for_window(self, data_points, start_idx, end_idx):
+        peak = data_points[start_idx]['value']
+        s_date = data_points[start_idx]['date']
+
+        max_drawdown = 0.0
+        t_date = data_points[end_idx]['date']
+
+        for j in range(start_idx, end_idx + 1):
+            value = data_points[j]['value']
+            if value > peak:
+                peak = value
+                s_date = data_points[j]['date']
+            if peak != 0:
+                drawdown = (value - peak) / peak
+                if drawdown < max_drawdown or (drawdown == max_drawdown and data_points[j]['date'] > s_date):
+                    max_drawdown = drawdown
+                    t_date = data_points[j]['date']
+        return max_drawdown, s_date, t_date
+
 

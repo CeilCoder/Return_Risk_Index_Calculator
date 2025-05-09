@@ -23,6 +23,9 @@ def main():
     sharpe_ratio = calculator.annualized_sharpe_ratio()
     print("Sharpe Ratio:\n", sharpe_ratio)
 
+    max_drawdown = calculator.max_drawdown(INPUT_STR)
+    print("Max Drawdown:\n", max_drawdown)
+
 
 if __name__ == "__main__":
     main()
