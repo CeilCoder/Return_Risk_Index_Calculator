@@ -19,6 +19,10 @@ def main():
     volatility = calculator.combined_volatility()
     print("Volatility Returns:\n", volatility)
 
+    # 夏普比率计算
+    sharpe_ratio = calculator.annualized_sharpe_ratio()
+    print("Sharpe Ratio:\n", sharpe_ratio)
+
 
 if __name__ == "__main__":
     main()

@@ -4,6 +4,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import bisect
+
+from fontTools.misc.plistlib import end_date
+
 from utils import calculate_interval_return, annualized_return, get_quarter_days
 from config import WINDOWS
 
@@ -144,13 +147,13 @@ class ReturnRiskIndexCalculator:
             date_list.append(end_date)
 
             for window_days in window_days_list:
-                vol = self._calculate_volatility(end_date, window_days=window_days, min_points=min_points)
+                vol, r_t_p = self._calculate_volatility(end_date, window_days=window_days, min_points=min_points)
                 volatility_dict[window_days].append(vol)
 
             # 新增：本月以来波动率计算
-            mtd_vol = self._calculate_period_volatility(end_date, period_type='month')
-            qtd_vol = self._calculate_period_volatility(end_date, period_type='quarter')
-            ytd_vol = self._calculate_period_volatility(end_date, period_type='year')
+            mtd_vol, mtd_r_t_p = self._calculate_period_volatility(end_date, period_type='month')
+            qtd_vol, qtd_r_t_p = self._calculate_period_volatility(end_date, period_type='quarter')
+            ytd_vol, ytd_r_t_p = self._calculate_period_volatility(end_date, period_type='year')
             mtd_volatility_list.append(mtd_vol)
             qtd_volatility_list.append(qtd_vol)
             ytd_volatility_list.append(ytd_vol)
@@ -180,7 +183,7 @@ class ReturnRiskIndexCalculator:
         """
         series = self.net_values_series[:end_date]
         if len(series) < 2:
-            return None
+            return None, None
 
         # 动态确定周期起始日期
         if period_type == 'month':
@@ -218,7 +221,7 @@ class ReturnRiskIndexCalculator:
             'year': 12,  # 对于近1年的数据，估值次数小于12次不计算
         }
         if len(filtered) < min_point_requirements.get(period_type, min_points):
-            return None
+            return None, None
 
         returns = filtered.pct_change().dropna()
         date_diffs = pd.Series(filtered.index).diff().dt.days.replace(0, np.nan).fillna(1)
@@ -253,7 +256,7 @@ class ReturnRiskIndexCalculator:
         r_period_bar = r_t_period.mean()
         volatility = np.sqrt(((r_t_period - r_period_bar) ** 2).sum() / (len(r_t_period) - 1)) * np.sqrt(freq)
 
-        return round(volatility, 4)
+        return round(volatility, 4), r_t_period
 
 
     def _calculate_volatility(self, end_date, window_days=30, min_points=12, freq_multiplier=365):
@@ -271,7 +274,7 @@ class ReturnRiskIndexCalculator:
         }
 
         if len(filtered) < min_point_requirements.get(window_days, min_points):
-            return None
+            return None, None
 
         returns = filtered.pct_change().dropna()
         date_diffs = pd.Series(filtered.index).diff().dt.days.replace(0, np.nan).fillna(1)
@@ -317,9 +320,44 @@ class ReturnRiskIndexCalculator:
 
         r_period_bar = r_t_period.mean()
         volatility = np.sqrt(((r_t_period - r_period_bar) ** 2).sum() / (len(r_t_period) - 1)) * np.sqrt(freq)
-        return round(volatility, 4)
+        return round(volatility, 4), r_t_period
 
     # ----------- 夏普比率计算相关方法 --------------
 
-    def annualized_sharpe_ratio(self):
-        return 0
+    def annualized_sharpe_ratio(self, window_days_list=None):
+        """
+        优化后的计算多个窗口下的夏普比率的方法
+        :return: DataFrame：包含每个时间节点的夏普比率
+        """
+        if window_days_list is None:
+            window_days_list = [x for x in WINDOWS if x not in [7, 14, 0]]
+        period_list = ['month', 'quarter', 'year']
+
+        # 合并周期列表
+        periods_to_calculate = {f'Sharpe_{win}D': win for win in window_days_list}
+        periods_to_calculate.update({f'Sharpe_{period}D': period for period in period_list})
+
+        sharpe_data = {key: [] for key in ['Date'] + list(periods_to_calculate.keys())}
+
+        for i in range(len(self.net_values_series)):
+            end_date = self.net_values_series.index[i]
+            sharpe_data['Date'].append(end_date)
+
+            for name, period in periods_to_calculate.items():
+                if isinstance(period, int):  # 如果是天数窗口
+                    monthly_returns, r_t_day = self._calculate_volatility(end_date=end_date, window_days=period)
+                else:  # 如果是时间段
+                    monthly_returns, r_t_day = self._calculate_period_volatility(end_date=end_date, period_type=period)
+
+                if monthly_returns is not None and r_t_day is not None:
+                    r_t_year_day = (r_t_day * 365).mean()
+                    sharpe_ratio = (r_t_year_day - 0.015) / monthly_returns
+                else:
+                    sharpe_ratio = None
+
+                sharpe_data[name].append(sharpe_ratio)
+
+        sharpe_df = pd.DataFrame(sharpe_data)
+        return sharpe_df
+
+
