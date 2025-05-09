@@ -22,7 +22,7 @@ def main():
 
     # 年化波动率计算
     volatility = calculator.combined_volatility()
-    print("近1月年化波动率为:\n", volatility)
+    print("Volatility Returns:\n", volatility)
 
 
 if __name__ == "__main__":

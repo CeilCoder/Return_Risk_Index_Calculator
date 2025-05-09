@@ -122,7 +122,7 @@ class ReturnRiskIndexCalculator:
         df = pd.DataFrame(result_data)
         return df, "|".join(out_strings)
 
-    def combined_volatility(self, window_days_list=[30, 91], min_points=12):
+    def combined_volatility(self, window_days_list=None, min_points=12):
         """
         计算多个窗口下的年化波动率，并返回包含所有结果的DataFrame
 
@@ -133,8 +133,11 @@ class ReturnRiskIndexCalculator:
         返回:
         - volatility_df: DataFrame, 每列为对应窗口的波动率
         """
+        if window_days_list is None:
+            window_days_list = [x for x in WINDOWS if x not in [7, 14, 0]]
         volatility_dict = {window: [] for window in window_days_list}
         date_list = []
+        mtd_volatility_list = []
 
         for i in range(len(self.net_values_series)):
             end_date = self.net_values_series.index[i]
@@ -144,13 +147,49 @@ class ReturnRiskIndexCalculator:
                 vol = self._calculate_volatility(end_date, window_days=window_days, min_points=min_points)
                 volatility_dict[window_days].append(vol)
 
+            # 新增：本月以来波动率计算
+            mtd_vol = self._calculate_mtd_volatility(end_date)
+            mtd_volatility_list.append(mtd_vol)
+
         # 构建 DataFrame
         df_data = {'Date': date_list}
         for window in window_days_list:
             df_data[f'Volatility_{window}D'] = volatility_dict[window]
+        df_data['Volatility_MTD'] = mtd_volatility_list  # 新增 MTD 波动率列
 
         volatility_df = pd.DataFrame(df_data)
         return volatility_df
+
+    def _calculate_mtd_volatility(self, end_date, freq_multiplier=365):
+        """
+        计算从上个月最后一个交易日到当前日期的年化波动率（Month to Date）
+        """
+        series = self.net_values_series[:end_date]
+        if len(series) < 2:
+            return None
+
+        # 获取上个月最后一天（即当前月份第一个交易日前一天）
+        current_month_start = pd.Timestamp(end_date.year, end_date.month, 1)
+        prev_month_end = current_month_start - pd.Timedelta(days=1)
+        print(prev_month_end)
+        indexer = series.index.get_indexer([prev_month_end], method='ffill')
+        if indexer[0] == -1:  # 如果没有找到匹配项
+            return None
+
+        start_idx = indexer[0]
+        filtered = series.iloc[start_idx:]
+        if len(filtered) < 12:
+            return None
+        returns = filtered.pct_change().dropna()
+
+        date_diffs = pd.Series(filtered.index).diff().dt.days.replace(0, np.nan).fillna(1)
+
+        # 使用日化频率进行年化
+        r_t_period = returns / (date_diffs.iloc[1:].values / 365)
+        r_period_bar = r_t_period.mean()
+
+        volatility = np.sqrt(((r_t_period - r_period_bar) ** 2).sum() / (len(r_t_period) - 1)) * np.sqrt(freq_multiplier)
+        return round(volatility, 4)
 
 
     def _calculate_volatility(self, end_date, window_days=30, min_points=12, freq_multiplier=365):
@@ -158,19 +197,56 @@ class ReturnRiskIndexCalculator:
         start_index = max(0, i - window_days)
         filtered = self.net_values_series.iloc[start_index:i + 1]
 
-        if len(filtered) < min_points:
+        min_point_requirements = {
+            30: 12,                 # 对于近1月的数据，估值次数小于12次不计算
+            91: 12,                 # 对于近3月的数据，估值次数小于12次不计算
+            182: 6,                 # 对于近6月的数据，估值次数小于6次不计算
+            365: 12,                # 对于近1年的数据，估值次数小于12次不计算
+            730: 24,                # 对于近2年的数据，估值次数小于24次不计算
+            1095: 36                # 对于近3年的数据，估值次数小于36次不计算
+        }
+
+        if len(filtered) < min_point_requirements.get(window_days, min_points):
             return None
 
         returns = filtered.pct_change().dropna()
         date_diffs = pd.Series(filtered.index).diff().dt.days.replace(0, np.nan).fillna(1)
 
         # 根据窗口大小选择合适的频率调整方法
-        if window_days == 91 and len(filtered) >= 36:  # 对于3个月窗口，如果数据点足够，则使用日回报率
-            r_t_period = returns / date_diffs.iloc[1:].values
-            freq = freq_multiplier
-        elif window_days == 91 and 12 <= len(filtered) < 36:  # 如果数据点不够，则尝试用周回报率
-            r_t_period = returns / (date_diffs.iloc[1:].values / 7)
-            freq = 52
+        """
+        近1月年化波动率：如果近1月估值次数大于等于12次，按照日化收益率计算
+        近3月年化波动率：如果近3月估值次数大于等于36次，按照日化收益率计算；如果小于36次大于等于12次，按照周化收益率计算
+        近6月年化波动率：如果近6月估值次数大于等于72次，按照日化收益率计算；如果小于72次大于等于24次，按照周化收益率计算；如果小于24次大于等于6次，按照月化收益率计算
+        近1年年化波动率：如果近1年估值次数大于等于144次，按照日化收益率计算；如果小于144次大于等于48次，按照周化收益率计算；如果小于48次大于等于12次，按照月化收益率计算
+        近2年年化波动率：如果近2年估值次数大于等于288次，按照日化收益率计算；如果小于288次大于等于96次，按照周化收益率计算；如果小于96次大于等于24次，按照月化收益率计算
+        近3年年化波动率：如果近3年估值次数大于等于432次，按照日化收益率计算；如果小于432次大于等于144次，按照周化收益率计算；如果小于144次大于等于36次，按照月化收益率计算
+        """
+        conditions = {
+            # 30: [(12, freq_multiplier)],
+            91: [(36, freq_multiplier), (12, 52)],
+            182: [(72, freq_multiplier), (24, 52), (6, 12)],
+            365: [(144, freq_multiplier), (48, 52), (12, 12)],
+            730: [(288, freq_multiplier), (96, 52), (24, 12)],
+            1095: [(432, freq_multiplier), [144, 52], (36, 12)]
+        }
+
+        # 计算日化、周化、月化收益率时的系数
+        divisors = {
+            freq_multiplier: 365,  # 日化
+            52: 7,  # 周化
+            12: 30  # 月化
+        }
+
+        r_t_period = returns / date_diffs.iloc[1:].values
+        freq = freq_multiplier
+
+        if window_days in conditions:
+            for threshold, frequency in conditions[window_days]:
+                if len(filtered) >= threshold:
+                    divisors = divisors[frequency]
+                    r_t_period = returns / (date_diffs.iloc[1:].values / divisors)
+                    freq = frequency
+                    break
         else:  # 默认情况下使用日回报率
             r_t_period = returns / date_diffs.iloc[1:].values
             freq = freq_multiplier
