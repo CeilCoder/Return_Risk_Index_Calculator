@@ -21,7 +21,7 @@ def main():
     print("Valuation Count DataFrame:\n", valuation_df)
 
     # 年化波动率计算
-    volatility = calculator.annualized_volatility()
+    volatility = calculator.combined_volatility()
     print("近1月年化波动率为:\n", volatility)
 
 

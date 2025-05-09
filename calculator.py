@@ -122,86 +122,59 @@ class ReturnRiskIndexCalculator:
         df = pd.DataFrame(result_data)
         return df, "|".join(out_strings)
 
-    def annualized_volatility(self, windows=None, min_points=12):
+    def combined_volatility(self, window_days_list=[30, 91], min_points=12):
         """
-        支持多个窗口期（如 30 天、91 天）的年化波动率计算。
-        返回一个 DataFrame，包含 'Date' 和各窗口期对应的波动率列。
+        计算多个窗口下的年化波动率，并返回包含所有结果的DataFrame
 
-        参数：
-            windows (list): 窗口期配置，格式如：[30, 91]
-            min_points (int): 最少估值点数量要求，默认为 12
+        参数:
+        - window_days_list: list of int, 多个窗口天数，如 [30, 91]
+        - min_points: 最少数据点数量要求
+
+        返回:
+        - volatility_df: DataFrame, 每列为对应窗口的波动率
         """
-        if windows is None:
-            windows = [30, 91]
-
-        # 初始化结果字典
-        volatility_dict = {f'{window}天年化波动率': [] for window in windows}
+        volatility_dict = {window: [] for window in window_days_list}
         date_list = []
 
-        index_dates = self.net_values_series.index
+        for i in range(len(self.net_values_series)):
+            end_date = self.net_values_series.index[i]
+            date_list.append(end_date)
 
-        for i, date in enumerate(index_dates):
-            date_list.append(date)
-            returns_window = self.net_values_series.iloc[max(0, i - max(windows)):i + 1]
-
-            # 判断估值频率
-            annualized_volatility_data_1m = self.net_values_series[
-                (self.net_values_series.index > date - timedelta(days=30)) &
-                (self.net_values_series.index <= date)
-            ]
-            num_annualized_volatility_data_1m = len(annualized_volatility_data_1m)
-
-            annualized_volatility_data_3m = self.net_values_series[
-                (self.net_values_series.index > date - timedelta(days=91)) &
-                (self.net_values_series.index <= date)
-            ]
-            num_annualized_volatility_data_3m = len(annualized_volatility_data_3m)
-
-            if num_annualized_volatility_data_1m < min_points or num_annualized_volatility_data_3m < min_points:
-                for col_name in volatility_dict.keys():
-                    volatility_dict[col_name].append(None)
-                continue
-
-            # 根据估值次数选择计算方法
-            if min_points <= num_annualized_volatility_data_3m < 36:
-                freq_multiplier = 52
-            elif num_annualized_volatility_data_3m >= 36 or num_annualized_volatility_data_1m >= 12:
-                freq_multiplier = 365
-            else:
-                freq_multiplier = None
-
-            for window_days in windows:
-                start_date = date - timedelta(days=window_days)
-
-                # 如果数据起始时间早于窗口开始时间，则截取对应窗口数据
-                filtered = self.net_values_series[
-                    (self.net_values_series.index > start_date) &
-                    (self.net_values_series.index <= date)
-                    ]
-
-                if len(filtered) < min_points:
-                    volatility_dict[f'{window_days}天年化波动率'].append(None)
-                    continue
-
-                returns = filtered.pct_change().dropna()
-                date_diffs = pd.Series(filtered.index).diff().dt.days.replace(0, np.nan).fillna(1)
-                if freq_multiplier == 52:
-                    r_t_week = returns / (date_diffs.values[1:] / 7)
-                    r_day_bar = r_t_week.mean()
-                    volatility = np.sqrt(((r_t_week - r_day_bar) ** 2).sum() / (len(r_t_week) - 1)) * np.sqrt(freq_multiplier)
-                else:
-                    r_t_day = returns / date_diffs.iloc[1:].values
-                    r_day_bar = r_t_day.mean()
-                    volatility = np.sqrt(((r_t_day - r_day_bar) ** 2).sum() / (len(r_t_day) - 1)) * np.sqrt(365)
-
-                volatility = round(volatility, 4)  # 保留4位小数
-
-                volatility_dict[f'{window_days}天年化波动率'].append(volatility)
+            for window_days in window_days_list:
+                vol = self._calculate_volatility(end_date, window_days=window_days, min_points=min_points)
+                volatility_dict[window_days].append(vol)
 
         # 构建 DataFrame
-        result_df = pd.DataFrame({
-            'Date': date_list,
-            **volatility_dict
-        })
+        df_data = {'Date': date_list}
+        for window in window_days_list:
+            df_data[f'Volatility_{window}D'] = volatility_dict[window]
 
-        return result_df
+        volatility_df = pd.DataFrame(df_data)
+        return volatility_df
+
+
+    def _calculate_volatility(self, end_date, window_days=30, min_points=12, freq_multiplier=365):
+        i = self.net_values_series.index.get_loc(end_date)
+        start_index = max(0, i - window_days)
+        filtered = self.net_values_series.iloc[start_index:i + 1]
+
+        if len(filtered) < min_points:
+            return None
+
+        returns = filtered.pct_change().dropna()
+        date_diffs = pd.Series(filtered.index).diff().dt.days.replace(0, np.nan).fillna(1)
+
+        # 根据窗口大小选择合适的频率调整方法
+        if window_days == 91 and len(filtered) >= 36:  # 对于3个月窗口，如果数据点足够，则使用日回报率
+            r_t_period = returns / date_diffs.iloc[1:].values
+            freq = freq_multiplier
+        elif window_days == 91 and 12 <= len(filtered) < 36:  # 如果数据点不够，则尝试用周回报率
+            r_t_period = returns / (date_diffs.iloc[1:].values / 7)
+            freq = 52
+        else:  # 默认情况下使用日回报率
+            r_t_period = returns / date_diffs.iloc[1:].values
+            freq = freq_multiplier
+
+        r_period_bar = r_t_period.mean()
+        volatility = np.sqrt(((r_t_period - r_period_bar) ** 2).sum() / (len(r_t_period) - 1)) * np.sqrt(freq)
+        return round(volatility, 4)
