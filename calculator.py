@@ -137,7 +137,7 @@ class ReturnRiskIndexCalculator:
             window_days_list = [x for x in WINDOWS if x not in [7, 14, 0]]
         volatility_dict = {window: [] for window in window_days_list}
         date_list = []
-        mtd_volatility_list = []
+        mtd_volatility_list, qtd_volatility_list, ytd_volatility_list = [], [], []
 
         for i in range(len(self.net_values_series)):
             end_date = self.net_values_series.index[i]
@@ -148,47 +148,111 @@ class ReturnRiskIndexCalculator:
                 volatility_dict[window_days].append(vol)
 
             # 新增：本月以来波动率计算
-            mtd_vol = self._calculate_mtd_volatility(end_date)
+            mtd_vol = self._calculate_period_volatility(end_date, period_type='month')
+            qtd_vol = self._calculate_period_volatility(end_date, period_type='quarter')
+            ytd_vol = self._calculate_period_volatility(end_date, period_type='year')
             mtd_volatility_list.append(mtd_vol)
+            qtd_volatility_list.append(qtd_vol)
+            ytd_volatility_list.append(ytd_vol)
 
         # 构建 DataFrame
         df_data = {'Date': date_list}
         for window in window_days_list:
             df_data[f'Volatility_{window}D'] = volatility_dict[window]
         df_data['Volatility_MTD'] = mtd_volatility_list  # 新增 MTD 波动率列
+        df_data['Volatility_QTD'] = qtd_volatility_list  # 新增 QTD 波动率列
+        df_data['Volatility_YTD'] = ytd_volatility_list  # 新增 YTD 波动率列
 
         volatility_df = pd.DataFrame(df_data)
         return volatility_df
 
-    def _calculate_mtd_volatility(self, end_date, freq_multiplier=365):
+    def _calculate_period_volatility(self, end_date, period_type='month', freq_multiplier=365, min_points=12):
         """
-        计算从上个月最后一个交易日到当前日期的年化波动率（Month to Date）
+        通用方法：计算从上个月底或本季度初到当前日期的年化波动率
+
+        参数:
+        - end_date: pd.Timestamp，当前计算波动率的截止日期
+        - period_type: str，支持 'month' 或 'quarter'
+        - freq_multiplier: 年化频率，默认为日频（365）
+
+        返回:
+        - volatility: float，年化波动率值（保留4位小数），失败则返回 None
         """
         series = self.net_values_series[:end_date]
         if len(series) < 2:
             return None
 
-        # 获取上个月最后一天（即当前月份第一个交易日前一天）
-        current_month_start = pd.Timestamp(end_date.year, end_date.month, 1)
-        prev_month_end = current_month_start - pd.Timedelta(days=1)
-        print(prev_month_end)
-        indexer = series.index.get_indexer([prev_month_end], method='ffill')
-        if indexer[0] == -1:  # 如果没有找到匹配项
-            return None
+        # 动态确定周期起始日期
+        if period_type == 'month':
+            # 上个月最后一天：本月1号减去1天
+            current_month_start = pd.Timestamp(end_date.year, end_date.month, 1)
+            start_date = current_month_start - pd.Timedelta(days=1)
+        elif period_type == 'quarter':
+            # 本季度第一天
+            quarter_start_month = ((end_date.month - 1) // 3) * 3 + 1
+            current_quarter_start = pd.Timestamp(end_date.year, quarter_start_month, 1)
+            start_date = current_quarter_start - pd.Timedelta(days=1)
+        elif period_type == 'year':
+            current_year_start = pd.Timestamp(end_date.year, 1, 1)
+            start_date = current_year_start - pd.Timedelta(days=1)
+        else:
+            raise ValueError("period_type 必须是 'month' 或 'quarter' 或 'year'")
 
-        start_idx = indexer[0]
+        # 尝试用 get_indexer 寻找最接近但不早于 start_date 的索引
+        indexer = series.index.get_indexer([start_date], method='ffill')
+
+        if indexer[0] == -1:
+            valid_dates = series.index[series.index >= start_date]
+            if len(valid_dates) > 0:
+                start_idx = series.index.get_loc(valid_dates[0])  # 取第一个不早于 start_date 的交易日
+            else:
+                return None
+        else:
+            start_idx = indexer[0]
+
         filtered = series.iloc[start_idx:]
-        if len(filtered) < 12:
-            return None
-        returns = filtered.pct_change().dropna()
 
+        min_point_requirements = {
+            'month': 12,  # 对于近1月的数据，估值次数小于12次不计算
+            'quarter': 12,  # 对于近3月的数据，估值次数小于12次不计算
+            'year': 12,  # 对于近1年的数据，估值次数小于12次不计算
+        }
+        if len(filtered) < min_point_requirements.get(period_type, min_points):
+            return None
+
+        returns = filtered.pct_change().dropna()
         date_diffs = pd.Series(filtered.index).diff().dt.days.replace(0, np.nan).fillna(1)
 
-        # 使用日化频率进行年化
-        r_t_period = returns / (date_diffs.iloc[1:].values / 365)
-        r_period_bar = r_t_period.mean()
+        conditions = {
+            # 30: [(12, freq_multiplier)],
+            'quarter': [(36, freq_multiplier), (12, 52)],
+            'year': [(144, freq_multiplier), (48, 52), (12, 12)]
+        }
 
-        volatility = np.sqrt(((r_t_period - r_period_bar) ** 2).sum() / (len(r_t_period) - 1)) * np.sqrt(freq_multiplier)
+        # 计算日化、周化、月化收益率时的系数
+        divisors = {
+            freq_multiplier: 365,  # 日化
+            52: 7,  # 周化
+            12: 30  # 月化
+        }
+
+        r_t_period = returns / date_diffs.iloc[1:].values
+        freq = freq_multiplier
+
+        if period_type in conditions:
+            for threshold, frequency in conditions[period_type]:
+                if len(filtered) >= threshold:
+                    divisors = divisors[frequency]
+                    r_t_period = returns / (date_diffs.iloc[1:].values / divisors)
+                    freq = frequency
+                    break
+        else:  # 默认情况下使用日回报率
+            r_t_period = returns / date_diffs.iloc[1:].values
+            freq = freq_multiplier
+
+        r_period_bar = r_t_period.mean()
+        volatility = np.sqrt(((r_t_period - r_period_bar) ** 2).sum() / (len(r_t_period) - 1)) * np.sqrt(freq)
+
         return round(volatility, 4)
 
 
@@ -254,3 +318,8 @@ class ReturnRiskIndexCalculator:
         r_period_bar = r_t_period.mean()
         volatility = np.sqrt(((r_t_period - r_period_bar) ** 2).sum() / (len(r_t_period) - 1)) * np.sqrt(freq)
         return round(volatility, 4)
+
+    # ----------- 夏普比率计算相关方法 --------------
+
+    def annualized_sharpe_ratio(self):
+        return 0
