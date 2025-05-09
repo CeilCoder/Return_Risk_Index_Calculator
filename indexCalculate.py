@@ -43,10 +43,6 @@ class ReturnRiskIndexCalculator:
 
         return quarter_since_begin
 
-    # 计算区间收益率
-    def calculate_interval_returns(self, current_value, base_value):
-        return (current_value - base_value) / base_value
-
     def annualized_return(self, windows=None):
         """
         计算 周期年化收益率 和 周期以来的年化收益率
@@ -55,7 +51,7 @@ class ReturnRiskIndexCalculator:
         # 年化收益率计算公式
         def calculate_rt_year(current_value, base_value, delta_days):
             if delta_days > 0:
-                return ReturnRiskIndexCalculator.calculate_interval_returns(self, current_value, base_value) * (365 / delta_days)
+                return ((current_value - base_value) / base_value) * (365 / delta_days)
             return None
 
         # 空值处理
@@ -168,8 +164,7 @@ class ReturnRiskIndexCalculator:
         估值次数计算
         """
 
-        if windows is None:
-            windows = WINDOWS
+        windows = WINDOWS
         input_str = INPUT_STR
         input_list = input_str.split(",")
         parsed = {}
@@ -229,18 +224,6 @@ class ReturnRiskIndexCalculator:
 
         print("|".join(out_string))
         return "|".join(out_string)
-
-
-    def annualized_volatility(self, windows=None):
-        """
-        计算年化波动率
-        """
-        if windows is None:
-            windows = WINDOWS
-        windows = [30]
-        t_windows = [365]
-
-
 
     def run_method(self, method_name):
         if hasattr(self, method_name):
