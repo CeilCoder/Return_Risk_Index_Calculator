@@ -6,24 +6,25 @@ from config import INPUT_STR
 def main():
     series = parse_input_to_series(INPUT_STR)
     calculator = ReturnRiskIndexCalculator(series)
+    #
+    # # 计算年化收益率
+    # annualized_returns_df = calculator.annualized_return()
+    # print("Annualized Returns:\n", annualized_returns_df)
+    #
+    # # 估值次数计算
+    # valuation_df, valuation_output = calculator.count_valuation()
+    # print("Valuation Count DataFrame:\n", valuation_df)
+    #
+    # # 年化波动率计算
+    # volatility = calculator.combined_volatility()
+    # print("Volatility Returns:\n", volatility)
+    #
+    # # 夏普比率计算
+    # sharpe_ratio = calculator.annualized_sharpe_ratio()
+    # print("Sharpe Ratio:\n", sharpe_ratio)
 
-    # 计算年化收益率
-    annualized_returns_df = calculator.annualized_return()
-    print("Annualized Returns:\n", annualized_returns_df)
-
-    # 估值次数计算
-    valuation_df, valuation_output = calculator.count_valuation()
-    print("Valuation Count DataFrame:\n", valuation_df)
-
-    # 年化波动率计算
-    volatility = calculator.combined_volatility()
-    print("Volatility Returns:\n", volatility)
-
-    # 夏普比率计算
-    sharpe_ratio = calculator.annualized_sharpe_ratio()
-    print("Sharpe Ratio:\n", sharpe_ratio)
-
-    max_drawdown = calculator.max_drawdown(INPUT_STR)
+    # 最大回撤计算
+    max_drawdown = calculator.max_drawdown()
     print("Max Drawdown:\n", max_drawdown)
 
 

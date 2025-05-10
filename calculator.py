@@ -4,9 +4,6 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import bisect
-
-from fontTools.misc.plistlib import end_date
-
 from utils import calculate_interval_return, annualized_return, get_quarter_days
 from config import WINDOWS
 
@@ -362,70 +359,71 @@ class ReturnRiskIndexCalculator:
 
     # ----------- 最大回撤计算相关方法 --------------
 
-    def max_drawdown(self, input_str):
-        """
-        根据给定的输入字符串，计算每个时间点上的最大回撤，并返回DataFrame
-        参数:
-        - input_str: str，格式化的净值数据串
-        返回:
-        - DataFrame，包含日期和各窗口期的最大回撤值，格式为"最大回撤(S,T)"
-        """
-        items = input_str.split(',')
-        data_points = []
-        for item in items:
-            parts = item.split('^')
-            date_str = parts[0]
-            value = float(parts[1])
-            flag = int(parts[2]) if len(parts) >= 3 else 1
-            date_obj = datetime.strptime(date_str, "%Y%m%d")
-            data_points.append({"date": date_obj, "value": value, "flag": flag})
+    def max_drawdown(self, window_list=None):
+        if window_list is None:
+            window_list = [x for x in WINDOWS if x not in [7, 14, 0]]
+        period_list = ['month', 'quarter', 'year']
+        max_drawdown_dict = {window: [] for window in window_list}
+        date_list = []
+        mtd_volatility_list, qtd_volatility_list, ytd_volatility_list = [], [], []
 
-        result_data = []
-        windows = [7, 14, 30, 91, 182, 365, 730, 1095]
-        timestamps = [dp["date"].timestamp() for dp in data_points]
+        for i in range(len(self.net_values_series)):
+            end_date = self.net_values_series.index[i]
+            date_list.append(end_date)
 
-        for i, dp in enumerate(data_points):
-            if dp["flag"] == 0:
-                continue
-            row = {"Date": dp['date']}
-            for win in windows:
-                start_idx = self.find_window_start(timestamps, i, win)
-                if not self.is_enough_days(data_points[start_idx]["date"], dp["date"], win):
-                    row[f"D{win}"] = None
-                    continue
-                max_drawdown, s_date, t_date = self.max_drawdown_for_window(data_points, start_idx, i)
-                row[f"D{win}"] = f"{max_drawdown:.4f}(S:{s_date.strftime('%Y%m%d')},T:{dp['date'].strftime('%Y%m%d')})"
-            result_data.append(row)
+            for win in window_list:
+                max_drawdown = self._calculate_max_drawdown(end_date, windows=win)
+                max_drawdown_dict[win].append(max_drawdown)
 
-        return pd.DataFrame(result_data).set_index("Date")
+            # 新增：本月以来波动率计算
+            # mtd_vol, mtd_r_t_p = self._calculate_period_volatility(end_date, period_type='month')
+            # qtd_vol, qtd_r_t_p = self._calculate_period_volatility(end_date, period_type='quarter')
+            # ytd_vol, ytd_r_t_p = self._calculate_period_volatility(end_date, period_type='year')
+            # mtd_volatility_list.append(mtd_vol)
+            # qtd_volatility_list.append(qtd_vol)
+            # ytd_volatility_list.append(ytd_vol)
 
-    def find_window_start(self, timestamps, end_index, window_days):
-        end_time = timestamps[end_index]
-        window_seconds = window_days * 24 * 3600
-        idx = bisect.bisect_left(timestamps, end_time - window_seconds, 0, end_index + 1)
-        return idx
+        # 构建 DataFrame
+        df_data = {'Date': date_list}
+        for win in window_list:
+            df_data[f'Max_drawdown_{win}D'] = max_drawdown_dict[win]
+        # df_data['Volatility_MTD'] = mtd_volatility_list  # 新增 MTD 波动率列
+        # df_data['Volatility_QTD'] = qtd_volatility_list  # 新增 QTD 波动率列
+        # df_data['Volatility_YTD'] = ytd_volatility_list  # 新增 YTD 波动率列
 
-    def is_enough_days(self, start_date, end_date, required_days):
-        diff_days = (end_date - start_date).days
-        return diff_days >= required_days
+        max_drawdown_df = pd.DataFrame(df_data)
+        return max_drawdown_df
 
-    def max_drawdown_for_window(self, data_points, start_idx, end_idx):
-        peak = data_points[start_idx]['value']
-        s_date = data_points[start_idx]['date']
+    def _calculate_max_drawdown(self, end_date, windows=7):
+        i = self.net_values_series.index.get_loc(end_date)
+        start_index = max(0, i - windows)
+        filtered = self.net_values_series.iloc[start_index: i + 1]
 
+        values = filtered.values
+        dates = filtered.index
+
+        peak = values[0]
+        peak_end_date = end_date
+        peak_start_date = dates[0]
         max_drawdown = 0.0
-        t_date = data_points[end_idx]['date']
+        drawdown_start, drawdown_end = peak_start_date, peak_end_date
 
-        for j in range(start_idx, end_idx + 1):
-            value = data_points[j]['value']
-            if value > peak:
-                peak = value
-                s_date = data_points[j]['date']
-            if peak != 0:
-                drawdown = (value - peak) / peak
-                if drawdown < max_drawdown or (drawdown == max_drawdown and data_points[j]['date'] > s_date):
+        for j in range(1, len(values)):
+            current_value = values[j]
+            current_date = dates[j]
+
+            if current_value > peak:
+                peak = current_value
+                peak_start_date = current_date
+            else:
+                drawdown = (current_value - peak) / peak
+                if drawdown < max_drawdown:
                     max_drawdown = drawdown
-                    t_date = data_points[j]['date']
-        return max_drawdown, s_date, t_date
+                    drawdown_start = peak_start_date
+                    drawdown_end = current_date
+
+        result_str = f"{max_drawdown:.4f}(S:{drawdown_start.strftime('%Y%m%d')},T:{drawdown_end.strftime('%Y%m%d')})"
+
+        return result_str
 
 
