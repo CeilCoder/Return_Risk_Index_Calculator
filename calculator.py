@@ -21,7 +21,7 @@ class ReturnRiskIndexCalculator:
         returns = self.net_values_series.pct_change()
         return returns.dropna()  # 删除第一个NaN值
 
-    def annualized_return(self):
+    def annualized_return(self, windows=None):
         """计算年化收益率"""
         result_data = []
         for dt in self.net_values_series.index:
@@ -63,6 +63,53 @@ class ReturnRiskIndexCalculator:
             result_data.append(row)
 
         return pd.DataFrame(result_data)
+
+    def _calculate_annualized_returns(self, end_date, period_type=None, windows=None):
+        # 确定起始日期
+        i = self.net_values_series.index.get_loc(end_date)
+        if period_type:
+            if period_type == 'month':
+                start_date = pd.Timestamp(end_date.year, end_date.month, 1) - pd.Timedelta(days=1)
+            elif period_type == 'quarter':
+                q_start_month = ((end_date.month - 1) // 3) * 3 + 1
+                start_date = pd.Timestamp(end_date.year, q_start_month, 1) - pd.Timedelta(days=1)
+            elif period_type == 'year':
+                start_date = pd.Timestamp(end_date.year, 1, 1) - pd.Timedelta(days=1)
+            else:
+                raise ValueError("Unsupported period_type")
+
+            indexer = self.net_values_series.index.get_indexer([start_date], method='ffill')
+            start_idx = indexer[0] if indexer[0] != -1 else next(
+                (i for i, d in enumerate(self.net_values_series.index) if d >= start_date), None)
+            filtered = self.net_values_series.iloc[start_idx: i + 1]
+        elif windows is not None:
+            start_index = max(0, i - windows)
+            filtered = self.net_values_series.iloc[start_index: i + 1]
+        else:
+            raise ValueError("Must specify either period_type or window_days")
+
+        values = filtered.values
+        dates = filtered.index
+
+        # 周期内的起始日期
+        start_date = dates[0]
+        start_value = values[0]
+        end_value = values[-1]
+        print(f"start_date: {start_date}, start_value: {start_value}, end_date: {end_date}, end_value: {end_value}")
+
+        if (end_date - start_date).days > windows:
+            returns = (end_value - start_value) / start_value
+            returns_year = returns * (365 / (end_date - start_date).days)
+        else:
+            returns_year = None
+        # print(returns_year)
+
+
+    def test(self):
+        for i in range(len(self.net_values_series.index)):
+            end_date = self.net_values_series.index[i]
+            a = self._calculate_annualized_returns(end_date=end_date, windows=7)
+
 
     # ----------- 估值次数计算相关方法 --------------
 

@@ -27,12 +27,12 @@ def main():
     # max_drawdown = calculator.max_drawdown()
     # print("Max Drawdown:\n", max_drawdown[['Date', 'Max_drawdown_7D']])
 
-    # 卡玛比率
-    calmer_ratio = calculator.annualized_calmer_ratio()
-    print("Calmer Ratio:", calmer_ratio)
+    # # 卡玛比率
+    # calmer_ratio = calculator.annualized_calmer_ratio()
+    # print("Calmer Ratio:", calmer_ratio)
 
-    # # test
-    # test = calculator.test()
+    # test
+    test = calculator.test()
     # print(test)
 
 
