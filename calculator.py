@@ -122,7 +122,7 @@ class ReturnRiskIndexCalculator:
         df = pd.DataFrame(result_data)
         return df, "|".join(out_strings)
 
-    def combined_volatility(self, window_days_list=None, min_points=12):
+    def annualized_volatility(self, window_days_list=None, min_points=12):
         """
         计算多个窗口下的年化波动率，并返回包含所有结果的DataFrame
 
@@ -135,142 +135,76 @@ class ReturnRiskIndexCalculator:
         """
         if window_days_list is None:
             window_days_list = [x for x in WINDOWS if x not in [7, 14, 0]]
-        volatility_dict = {window: [] for window in window_days_list}
-        date_list = []
-        mtd_volatility_list, qtd_volatility_list, ytd_volatility_list = [], [], []
+        period_list = ['month', 'quarter', 'year']
+
+        # 合并周期列表
+        periods_to_calculate = {f'Volatility_{win}D': win for win in window_days_list}
+        periods_to_calculate.update({f'Volatility_{period}D': period for period in period_list})
+
+        volatility_data = {key: [] for key in ['Date'] + list(periods_to_calculate.keys())}
+        # print(periods_to_calculate.items())
 
         for i in range(len(self.net_values_series)):
             end_date = self.net_values_series.index[i]
-            date_list.append(end_date)
+            volatility_data['Date'].append(end_date)
 
-            for window_days in window_days_list:
-                vol, r_t_p = self._calculate_volatility(end_date, window_days=window_days, min_points=min_points)
-                volatility_dict[window_days].append(vol)
+            for name, period in periods_to_calculate.items():
+                if isinstance(period, int):  # 如果是天数窗口
+                    monthly_returns, r_t_day = self._calculate_volatility(end_date=end_date, window_days=period)
+                else:  # 如果是时间段
+                    monthly_returns, r_t_day = self._calculate_volatility(end_date=end_date, period_type=period)
 
-            # 新增：本月以来波动率计算
-            mtd_vol, mtd_r_t_p = self._calculate_period_volatility(end_date, period_type='month')
-            qtd_vol, qtd_r_t_p = self._calculate_period_volatility(end_date, period_type='quarter')
-            ytd_vol, ytd_r_t_p = self._calculate_period_volatility(end_date, period_type='year')
-            mtd_volatility_list.append(mtd_vol)
-            qtd_volatility_list.append(qtd_vol)
-            ytd_volatility_list.append(ytd_vol)
+                volatility_data[name].append(monthly_returns)
 
-        # 构建 DataFrame
-        df_data = {'Date': date_list}
-        for window in window_days_list:
-            df_data[f'Volatility_{window}D'] = volatility_dict[window]
-        df_data['Volatility_MTD'] = mtd_volatility_list  # 新增 MTD 波动率列
-        df_data['Volatility_QTD'] = qtd_volatility_list  # 新增 QTD 波动率列
-        df_data['Volatility_YTD'] = ytd_volatility_list  # 新增 YTD 波动率列
-
-        volatility_df = pd.DataFrame(df_data)
+        volatility_df = pd.DataFrame(volatility_data)
         return volatility_df
 
-    def _calculate_period_volatility(self, end_date, period_type='month', freq_multiplier=365, min_points=12):
-        """
-        通用方法：计算从上个月底或本季度初到当前日期的年化波动率
-
-        参数:
-        - end_date: pd.Timestamp，当前计算波动率的截止日期
-        - period_type: str，支持 'month' 或 'quarter'
-        - freq_multiplier: 年化频率，默认为日频（365）
-
-        返回:
-        - volatility: float，年化波动率值（保留4位小数），失败则返回 None
-        """
+    def _calculate_volatility(self, end_date, period_type=None, window_days=None, freq_multiplier=365, min_points=12):
         series = self.net_values_series[:end_date]
         if len(series) < 2:
             return None, None
 
-        # 动态确定周期起始日期
-        if period_type == 'month':
-            # 上个月最后一天：本月1号减去1天
-            current_month_start = pd.Timestamp(end_date.year, end_date.month, 1)
-            start_date = current_month_start - pd.Timedelta(days=1)
-        elif period_type == 'quarter':
-            # 本季度第一天
-            quarter_start_month = ((end_date.month - 1) // 3) * 3 + 1
-            current_quarter_start = pd.Timestamp(end_date.year, quarter_start_month, 1)
-            start_date = current_quarter_start - pd.Timedelta(days=1)
-        elif period_type == 'year':
-            current_year_start = pd.Timestamp(end_date.year, 1, 1)
-            start_date = current_year_start - pd.Timedelta(days=1)
-        else:
-            raise ValueError("period_type 必须是 'month' 或 'quarter' 或 'year'")
-
-        # 尝试用 get_indexer 寻找最接近但不早于 start_date 的索引
-        indexer = series.index.get_indexer([start_date], method='ffill')
-
-        if indexer[0] == -1:
-            valid_dates = series.index[series.index >= start_date]
-            if len(valid_dates) > 0:
-                start_idx = series.index.get_loc(valid_dates[0])  # 取第一个不早于 start_date 的交易日
+        # 确定起始日期
+        if period_type:
+            if period_type == 'month':
+                start_date = pd.Timestamp(end_date.year, end_date.month, 1) - pd.Timedelta(days=1)
+            elif period_type == 'quarter':
+                q_start_month = ((end_date.month - 1) // 3) * 3 + 1
+                start_date = pd.Timestamp(end_date.year, q_start_month, 1) - pd.Timedelta(days=1)
+            elif period_type == 'year':
+                start_date = pd.Timestamp(end_date.year, 1, 1) - pd.Timedelta(days=1)
             else:
-                return None
+                raise ValueError("Unsupported period_type")
+
+            indexer = series.index.get_indexer([start_date], method='ffill')
+            start_idx = indexer[0] if indexer[0] != -1 else next(
+                (i for i, d in enumerate(series.index) if d >= start_date), None)
+            if start_idx is None:
+                return None, None
+            filtered = series.iloc[start_idx:]
+
+        elif window_days is not None:
+            i = series.index.get_loc(end_date)
+            start_index = max(0, i - window_days)
+            filtered = series.iloc[start_index:i + 1]
         else:
-            start_idx = indexer[0]
+            raise ValueError("Must specify either period_type or window_days")
 
-        filtered = series.iloc[start_idx:]
-
-        min_point_requirements = {
-            'month': 12,  # 对于近1月的数据，估值次数小于12次不计算
-            'quarter': 12,  # 对于近3月的数据，估值次数小于12次不计算
-            'year': 12,  # 对于近1年的数据，估值次数小于12次不计算
-        }
-        if len(filtered) < min_point_requirements.get(period_type, min_points):
-            return None, None
-
-        returns = filtered.pct_change().dropna()
-        date_diffs = pd.Series(filtered.index).diff().dt.days.replace(0, np.nan).fillna(1)
-
-        conditions = {
-            # 30: [(12, freq_multiplier)],
-            'quarter': [(36, freq_multiplier), (12, 52)],
-            'year': [(144, freq_multiplier), (48, 52), (12, 12)]
-        }
-
-        # 计算日化、周化、月化收益率时的系数
-        divisors = {
-            freq_multiplier: 365,  # 日化
-            52: 7,  # 周化
-            12: 30  # 月化
-        }
-
-        r_t_period = returns / date_diffs.iloc[1:].values
-        freq = freq_multiplier
-
-        if period_type in conditions:
-            for threshold, frequency in conditions[period_type]:
-                if len(filtered) >= threshold:
-                    divisors = divisors[frequency]
-                    r_t_period = returns / (date_diffs.iloc[1:].values / divisors)
-                    freq = frequency
-                    break
-        else:  # 默认情况下使用日回报率
-            r_t_period = returns / date_diffs.iloc[1:].values
-            freq = freq_multiplier
-
-        r_period_bar = r_t_period.mean()
-        volatility = np.sqrt(((r_t_period - r_period_bar) ** 2).sum() / (len(r_t_period) - 1)) * np.sqrt(freq)
-
-        return round(volatility, 4), r_t_period
-
-
-    def _calculate_volatility(self, end_date, window_days=30, min_points=12, freq_multiplier=365):
-        i = self.net_values_series.index.get_loc(end_date)
-        start_index = max(0, i - window_days)
-        filtered = self.net_values_series.iloc[start_index:i + 1]
-
-        min_point_requirements = {
+        # 检查数据量是否满足最低要求
+        key = period_type if period_type else window_days
+        min_required = {
+            'month': 12,
+            'quarter': 12,
+            'year': 12,
             30: 12,                 # 对于近1月的数据，估值次数小于12次不计算
             91: 12,                 # 对于近3月的数据，估值次数小于12次不计算
             182: 6,                 # 对于近6月的数据，估值次数小于6次不计算
             365: 12,                # 对于近1年的数据，估值次数小于12次不计算
             730: 24,                # 对于近2年的数据，估值次数小于24次不计算
             1095: 36                # 对于近3年的数据，估值次数小于36次不计算
-        }
+        }.get(key, min_points)
 
-        if len(filtered) < min_point_requirements.get(window_days, min_points):
+        if len(filtered) < min_required:
             return None, None
 
         returns = filtered.pct_change().dropna()
@@ -286,34 +220,31 @@ class ReturnRiskIndexCalculator:
         近3年年化波动率：如果近3年估值次数大于等于432次，按照日化收益率计算；如果小于432次大于等于144次，按照周化收益率计算；如果小于144次大于等于36次，按照月化收益率计算
         """
         conditions = {
-            # 30: [(12, freq_multiplier)],
+            'month': [(12, freq_multiplier)],
+            'quarter': [(36, freq_multiplier), (12, 52)],
+            'year': [(144, freq_multiplier), (48, 52), (12, 12)],
             91: [(36, freq_multiplier), (12, 52)],
             182: [(72, freq_multiplier), (24, 52), (6, 12)],
             365: [(144, freq_multiplier), (48, 52), (12, 12)],
             730: [(288, freq_multiplier), (96, 52), (24, 12)],
-            1095: [(432, freq_multiplier), [144, 52], (36, 12)]
+            1095: [(432, freq_multiplier), (144, 52), (36, 12)]
         }
 
         # 计算日化、周化、月化收益率时的系数
         divisors = {
-            freq_multiplier: 365,  # 日化
-            52: 7,  # 周化
-            12: 30  # 月化
+            freq_multiplier: 365,
+            52: 7,
+            12: 30
         }
 
-        r_t_period = returns / date_diffs.iloc[1:].values
         freq = freq_multiplier
+        r_t_period = returns / date_diffs.iloc[1:].values
 
-        if window_days in conditions:
-            for threshold, frequency in conditions[window_days]:
+        if key in conditions:
+            for threshold, frequency in conditions[key]:
                 if len(filtered) >= threshold:
-                    divisors = divisors[frequency]
-                    r_t_period = returns / (date_diffs.iloc[1:].values / divisors)
+                    r_t_period = returns / (date_diffs.iloc[1:].values / divisors[frequency])
                     freq = frequency
-                    break
-        else:  # 默认情况下使用日回报率
-            r_t_period = returns / date_diffs.iloc[1:].values
-            freq = freq_multiplier
 
         r_period_bar = r_t_period.mean()
         volatility = np.sqrt(((r_t_period - r_period_bar) ** 2).sum() / (len(r_t_period) - 1)) * np.sqrt(freq)
@@ -344,11 +275,11 @@ class ReturnRiskIndexCalculator:
                 if isinstance(period, int):  # 如果是天数窗口
                     monthly_returns, r_t_day = self._calculate_volatility(end_date=end_date, window_days=period)
                 else:  # 如果是时间段
-                    monthly_returns, r_t_day = self._calculate_period_volatility(end_date=end_date, period_type=period)
+                    monthly_returns, r_t_day = self._calculate_volatility(end_date=end_date, period_type=period)
 
                 if monthly_returns is not None and r_t_day is not None:
                     r_t_year_day = (r_t_day * 365).mean()
-                    sharpe_ratio = (r_t_year_day - 0.015) / monthly_returns
+                    sharpe_ratio = round((r_t_year_day - 0.015) / monthly_returns, 4)
                 else:
                     sharpe_ratio = None
 
@@ -360,9 +291,18 @@ class ReturnRiskIndexCalculator:
     # ----------- 最大回撤计算相关方法 --------------
 
     def max_drawdown(self, window_list=None):
+        """
+        优化后的计算多个窗口下的最大回撤的方法
+        :return: DataFrame：包含每个时间节点的最大回撤
+        """
         if window_list is None:
             window_list = [x for x in WINDOWS if x not in [7, 14, 0]]
         period_list = ['month', 'quarter', 'year']
+
+        # 合并周期列表
+        periods_to_calculate = {f'Max_drawdown_{win}D': win for win in window_list}
+        periods_to_calculate.update({f'Max_drawdown_{period}D': period for period in period_list})
+
         max_drawdown_dict = {window: [] for window in window_list}
         date_list = []
         mtd_volatility_list, qtd_volatility_list, ytd_volatility_list = [], [], []

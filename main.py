@@ -15,17 +15,17 @@ def main():
     # valuation_df, valuation_output = calculator.count_valuation()
     # print("Valuation Count DataFrame:\n", valuation_df)
     #
-    # # 年化波动率计算
-    # volatility = calculator.combined_volatility()
+    # 年化波动率计算
+    # volatility = calculator.annualized_volatility()
     # print("Volatility Returns:\n", volatility)
     #
-    # # 夏普比率计算
-    # sharpe_ratio = calculator.annualized_sharpe_ratio()
-    # print("Sharpe Ratio:\n", sharpe_ratio)
+    # 夏普比率计算
+    sharpe_ratio = calculator.annualized_sharpe_ratio()
+    print("Sharpe Ratio:\n", sharpe_ratio)
 
     # 最大回撤计算
-    max_drawdown = calculator.max_drawdown()
-    print("Max Drawdown:\n", max_drawdown)
+    # max_drawdown = calculator.max_drawdown()
+    # print("Max Drawdown:\n", max_drawdown)
 
 
 if __name__ == "__main__":
