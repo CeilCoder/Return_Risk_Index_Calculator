@@ -142,7 +142,6 @@ class ReturnRiskIndexCalculator:
         periods_to_calculate.update({f'Volatility_{period}D': period for period in period_list})
 
         volatility_data = {key: [] for key in ['Date'] + list(periods_to_calculate.keys())}
-        # print(periods_to_calculate.items())
 
         for i in range(len(self.net_values_series)):
             end_date = self.net_values_series.index[i]
@@ -290,54 +289,59 @@ class ReturnRiskIndexCalculator:
 
     # ----------- 最大回撤计算相关方法 --------------
 
-    def max_drawdown(self, window_list=None):
+    def max_drawdown(self, window=None):
         """
         优化后的计算多个窗口下的最大回撤的方法
         :return: DataFrame：包含每个时间节点的最大回撤
         """
-        if window_list is None:
-            window_list = [x for x in WINDOWS if x not in [7, 14, 0]]
+        if window is None:
+            window_list = [x for x in WINDOWS if x not in [0]]
         period_list = ['month', 'quarter', 'year']
 
         # 合并周期列表
         periods_to_calculate = {f'Max_drawdown_{win}D': win for win in window_list}
         periods_to_calculate.update({f'Max_drawdown_{period}D': period for period in period_list})
 
-        max_drawdown_dict = {window: [] for window in window_list}
-        date_list = []
-        mtd_volatility_list, qtd_volatility_list, ytd_volatility_list = [], [], []
+        max_drawdown_data = {key: [] for key in ['Date'] + list(periods_to_calculate.keys())}
 
         for i in range(len(self.net_values_series)):
             end_date = self.net_values_series.index[i]
-            date_list.append(end_date)
+            max_drawdown_data['Date'].append(end_date)
 
-            for win in window_list:
-                max_drawdown = self._calculate_max_drawdown(end_date, windows=win)
-                max_drawdown_dict[win].append(max_drawdown)
+            for name, period in periods_to_calculate.items():
+                if isinstance(period, int):  # 如果是天数窗口
+                    max_drawdown = self._calculate_max_drawdown(end_date=end_date, windows=period)
+                else:  # 如果是时间段
+                    max_drawdown = self._calculate_max_drawdown(end_date=end_date, period_type=period)
 
-            # 新增：本月以来波动率计算
-            # mtd_vol, mtd_r_t_p = self._calculate_period_volatility(end_date, period_type='month')
-            # qtd_vol, qtd_r_t_p = self._calculate_period_volatility(end_date, period_type='quarter')
-            # ytd_vol, ytd_r_t_p = self._calculate_period_volatility(end_date, period_type='year')
-            # mtd_volatility_list.append(mtd_vol)
-            # qtd_volatility_list.append(qtd_vol)
-            # ytd_volatility_list.append(ytd_vol)
+                max_drawdown_data[name].append(max_drawdown)
 
-        # 构建 DataFrame
-        df_data = {'Date': date_list}
-        for win in window_list:
-            df_data[f'Max_drawdown_{win}D'] = max_drawdown_dict[win]
-        # df_data['Volatility_MTD'] = mtd_volatility_list  # 新增 MTD 波动率列
-        # df_data['Volatility_QTD'] = qtd_volatility_list  # 新增 QTD 波动率列
-        # df_data['Volatility_YTD'] = ytd_volatility_list  # 新增 YTD 波动率列
-
-        max_drawdown_df = pd.DataFrame(df_data)
+        max_drawdown_df = pd.DataFrame(max_drawdown_data)
         return max_drawdown_df
 
-    def _calculate_max_drawdown(self, end_date, windows=7):
+    def _calculate_max_drawdown(self, end_date, period_type=None, windows=None):
+        # 确定起始日期
         i = self.net_values_series.index.get_loc(end_date)
-        start_index = max(0, i - windows)
-        filtered = self.net_values_series.iloc[start_index: i + 1]
+        if period_type:
+            if period_type == 'month':
+                start_date = pd.Timestamp(end_date.year, end_date.month, 1) - pd.Timedelta(days=1)
+            elif period_type == 'quarter':
+                q_start_month = ((end_date.month - 1) // 3) * 3 + 1
+                start_date = pd.Timestamp(end_date.year, q_start_month, 1) - pd.Timedelta(days=1)
+            elif period_type == 'year':
+                start_date = pd.Timestamp(end_date.year, 1, 1) - pd.Timedelta(days=1)
+            else:
+                raise ValueError("Unsupported period_type")
+
+            indexer = self.net_values_series.index.get_indexer([start_date], method='ffill')
+            start_idx = indexer[0] if indexer[0] != -1 else next((i for i, d in enumerate(self.net_values_series.index) if d >= start_date), None)
+            filtered = self.net_values_series.iloc[start_idx: i + 1]
+        elif windows is not None:
+            start_index = max(0, i - windows)
+            filtered = self.net_values_series.iloc[start_index: i + 1]
+        else:
+            raise ValueError("Must specify either period_type or window_days")
+
 
         values = filtered.values
         dates = filtered.index
@@ -347,6 +351,7 @@ class ReturnRiskIndexCalculator:
         peak_start_date = dates[0]
         max_drawdown = 0.0
         drawdown_start, drawdown_end = peak_start_date, peak_end_date
+        drawdown_repair_days = None
 
         for j in range(1, len(values)):
             current_value = values[j]
@@ -361,8 +366,9 @@ class ReturnRiskIndexCalculator:
                     max_drawdown = drawdown
                     drawdown_start = peak_start_date
                     drawdown_end = current_date
+                    drawdown_repair_days = (drawdown_end - drawdown_start).days
 
-        result_str = f"{max_drawdown:.4f}(S:{drawdown_start.strftime('%Y%m%d')},T:{drawdown_end.strftime('%Y%m%d')})"
+        result_str = f"{max_drawdown:.4f}(S:{drawdown_start.strftime('%Y%m%d')},T:{drawdown_end.strftime('%Y%m%d')},DRD:{drawdown_repair_days})"
 
         return result_str
 
