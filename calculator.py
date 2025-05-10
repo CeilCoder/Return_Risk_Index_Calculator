@@ -310,9 +310,9 @@ class ReturnRiskIndexCalculator:
 
             for name, period in periods_to_calculate.items():
                 if isinstance(period, int):  # 如果是天数窗口
-                    max_drawdown = self._calculate_max_drawdown(end_date=end_date, windows=period)
+                    max_drawdown, s_date, t_date, d_r_d = self._calculate_max_drawdown(end_date=end_date, windows=period)
                 else:  # 如果是时间段
-                    max_drawdown = self._calculate_max_drawdown(end_date=end_date, period_type=period)
+                    max_drawdown, s_date, t_date, d_r_d = self._calculate_max_drawdown(end_date=end_date, period_type=period)
 
                 max_drawdown_data[name].append(max_drawdown)
 
@@ -368,8 +368,53 @@ class ReturnRiskIndexCalculator:
                     drawdown_end = current_date
                     drawdown_repair_days = (drawdown_end - drawdown_start).days
 
+        # 处理格式
+
         result_str = f"{max_drawdown:.4f}(S:{drawdown_start.strftime('%Y%m%d')},T:{drawdown_end.strftime('%Y%m%d')},DRD:{drawdown_repair_days})"
 
-        return result_str
+        return round(max_drawdown, 4), drawdown_start.strftime('%Y%m%d'), drawdown_end.strftime('%Y%m%d'), drawdown_repair_days
+
+    # ----------- 卡玛比率计算相关方法 --------------
+
+    def annualized_calmer_ratio(self, windows=None):
+        """
+        优化后的计算多个窗口下的卡玛比率的方法
+        :return: DataFrame：包含每个时间节点的卡玛比率
+        """
+        if windows is None:
+            window_days_list = [x for x in WINDOWS if x not in [0]]
+        period_list = ['month', 'quarter', 'year']
+
+        # 合并周期列表
+        periods_to_calculate = {f'Calmer_{win}D': win for win in window_days_list}
+        periods_to_calculate.update({f'Calmer_{period}D': period for period in period_list})
+
+        calmer_data = {key: [] for key in ['Date'] + list(periods_to_calculate.keys())}
+
+        for i in range(len(self.net_values_series)):
+            end_date = self.net_values_series.index[i]
+            calmer_data['Date'].append(end_date)
+
+            for name, period in periods_to_calculate.items():
+                if isinstance(period, int):  # 如果是天数窗口
+                    max_drawdown, s_date, t_date, d_r_d = self._calculate_max_drawdown(end_date=end_date, windows=period)
+                    # returns = self.annualized_return().loc(end_date, f"d_{period}")
+                else:  # 如果是时间段
+                    # returns = self.annualized_return().loc(end_date, f"d_{period}")
+                    max_drawdown, s_date, t_date, d_r_d = self._calculate_max_drawdown(end_date=end_date, period_type=period)
+
+                returns = self.annualized_return()
+
+                if max_drawdown is not None and returns is not None:
+                    calmer_ratio = returns
+                    # calmer_ratio = returns / abs(min(max_drawdown, 0))
+                else:
+                    calmer_ratio = None
+
+                calmer_data[name].append(calmer_ratio)
+
+        calmer_df = pd.DataFrame(calmer_data)
+        return calmer_df
+
 
 

@@ -24,8 +24,12 @@ def main():
     # print("Sharpe Ratio:\n", sharpe_ratio)
 
     # 最大回撤计算
-    max_drawdown = calculator.max_drawdown()
-    print("Max Drawdown:\n", max_drawdown[['Date', 'Max_drawdown_7D']])
+    # max_drawdown = calculator.max_drawdown()
+    # print("Max Drawdown:\n", max_drawdown[['Date', 'Max_drawdown_7D']])
+
+    # 卡玛比率
+    calmer_ratio = calculator.annualized_calmer_ratio()
+    print("Calmer Ratio:", calmer_ratio)
 
     # # test
     # test = calculator.test()
