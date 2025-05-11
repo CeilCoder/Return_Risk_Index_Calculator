@@ -9,6 +9,7 @@ class ReturnRiskIndexCalculator:
         self.date_objs = net_values_series.index.to_pydatetime().tolist()
         self.value_list = net_values_series.tolist()
 
+    # ----------- 起始日期计算相关方法 --------------
     def _get_start_date(self, end_date, period_type=None, windows=None):
         if period_type:
             if period_type == 'month':
