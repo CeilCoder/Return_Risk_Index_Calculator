@@ -1,10 +1,5 @@
-# return_calculator/calculator.py
-
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-import bisect
-from utils import calculate_interval_return, annualized_return, get_quarter_days
 from config import WINDOWS
 
 
@@ -14,59 +9,151 @@ class ReturnRiskIndexCalculator:
         self.date_objs = net_values_series.index.to_pydatetime().tolist()
         self.value_list = net_values_series.tolist()
 
+    def _get_start_date(self, end_date, period_type=None, windows=None):
+        if period_type:
+            if period_type == 'month':
+                start_date = pd.Timestamp(end_date.year, end_date.month, 1) - pd.Timedelta(days=1)
+            elif period_type == 'quarter':
+                q_start_month = ((end_date.month - 1) // 3) * 3 + 1
+                start_date = pd.Timestamp(end_date.year, q_start_month, 1) - pd.Timedelta(days=1)
+            elif period_type == 'year':
+                start_date = pd.Timestamp(end_date.year, 1, 1) - pd.Timedelta(days=1)
+            elif period_type == 'current':
+                start_date = pd.Timestamp(end_date) - pd.Timedelta(days=1)
+            else:
+                raise ValueError("Unsupported period_type")
+        elif windows is not None:
+            i = self.net_values_series.index.get_loc(end_date)
+            return self.net_values_series.index[max(0, i - windows)]
+        else:
+            raise ValueError("Must specify either period_type or window_days")
+        return start_date
+
+    def _filter_data_by_dates(self, start_date, end_date):
+        indexer = self.net_values_series.index.get_indexer([start_date], method='ffill')
+        start_idx = indexer[0] if indexer[0] != -1 else next(
+            (i for i, d in enumerate(self.net_values_series.index) if d >= start_date), None)
+        return self.net_values_series.iloc[start_idx:self.net_values_series.index.get_loc(end_date) + 1]
+
     # ----------- 收益率计算相关方法 --------------
 
-    def batch_calculate_returns(self):
-        """计算区间收益率"""
-        returns = self.net_values_series.pct_change()
-        return returns.dropna()  # 删除第一个NaN值
-
     def annualized_return(self, windows=None):
-        """计算年化收益率"""
-        result_data = []
-        for dt in self.net_values_series.index:
-            row = {"Date": dt.strftime("%Y%m%d")}
-            # 当前与前一天比较
-            if dt != self.net_values_series.index[0]:
-                prev_dt = self.net_values_series.index[self.net_values_series.index.get_loc(dt) - 1]
-                interval_return = calculate_interval_return(self.net_values_series.loc[dt], self.net_values_series.loc[prev_dt])
-                row["d_curr"] = annualized_return(interval_return, (dt - prev_dt).days)
+        """
+        计算多个窗口下的年化收益率，并返回包含所有结果的DataFrame
 
-            # 各窗口期年化收益
-            for win in WINDOWS:
-                if win == 0:
-                    row[f"d_{win}"] = 0.0
-                    continue
+        参数:
+        - window_days_list: list of int, 多个窗口天数，如 [30, 91]
 
-                start_dt = dt - timedelta(days=win)
-                try:
-                    base_value = self.net_values_series[start_dt:].iloc[0]
-                    interval_return = calculate_interval_return(self.net_values_series.loc[dt], base_value)
-                    row[f"d_{win}"] = annualized_return(interval_return, (dt - start_dt).days)
-                except IndexError:
-                    row[f"d_{win}"] = None
+        返回:
+        - returns_df: DataFrame, 每列为对应窗口的收益率
+        """
+        if windows is None:
+            window_days_list = [x for x in WINDOWS if x not in [0]]
+        period_list = ['month', 'quarter', 'year', 'current']
 
-            # 月、季、年
-            month_start = dt.replace(day=1) - timedelta(days=1)
-            quarter_start = get_quarter_days(dt)
-            year_start = dt.replace(month=1, day=1) - timedelta(days=1)
+        # 合并周期列表
+        periods_to_calculate = {f'Returns_{win}D': win for win in window_days_list}
+        periods_to_calculate.update({f'Returns_{period}D': period for period in period_list})
 
-            periods = [("month", month_start), ("quarter", quarter_start), ("year", year_start)]
-            for period, start in periods:
-                try:
-                    base_value = self.net_values_series[start:].iloc[0]
-                    interval_return = calculate_interval_return(self.net_values_series.loc[dt], base_value)
-                    row[f"d_{period}"] = annualized_return(interval_return, (dt - start).days)
-                except IndexError:
-                    row[f"d_{period}"] = None
+        returns_data = {key: [] for key in ['Date'] + list(periods_to_calculate.keys())}
 
-            result_data.append(row)
+        for i in range(len(self.net_values_series)):
+            end_date = self.net_values_series.index[i]
+            returns_data['Date'].append(end_date)
 
-        return pd.DataFrame(result_data)
+            for name, period in periods_to_calculate.items():
+                if isinstance(period, int):  # 如果是天数窗口
+                    returns = self._calculate_annualized_returns(end_date=end_date, windows=period)
+                else:  # 如果是时间段
+                    returns = self._calculate_annualized_returns(end_date=end_date, period_type=period)
 
-    def _calculate_annualized_returns(self, end_date, period_type=None, windows=None):
+                returns_data[name].append(returns)
+
+        returns_df = pd.DataFrame(returns_data)
+        return returns_df
+
+    def _calculate_annualized_returns(self, end_date, period_type=None, windows=None, min_points=None):
         # 确定起始日期
         i = self.net_values_series.index.get_loc(end_date)
+        start_date = self._get_start_date(end_date=end_date, period_type=period_type, windows=windows)
+
+        filtered = self._filter_data_by_dates(start_date=start_date, end_date=end_date)
+
+        # 检查数据量是否满足最低要求
+        key = period_type if period_type else windows
+        min_required = {
+            'month': 1,
+            'quarter': 1,
+            'year': 1,
+            'current': 1,
+            7: 7,
+            14: 14,
+            30: 30,  # 对于近1月的数据，估值次数小于12次不计算
+            91: 91,  # 对于近3月的数据，估值次数小于12次不计算
+            182: 182,  # 对于近6月的数据，估值次数小于6次不计算
+            365: 365,  # 对于近1年的数据，估值次数小于12次不计算
+            730: 730,  # 对于近2年的数据，估值次数小于24次不计算
+            1095: 1095  # 对于近3年的数据，估值次数小于36次不计算
+        }.get(key, min_points)
+
+        values = filtered.values
+        dates = filtered.index
+
+        # 周期内净值的起始日期、起始日期对应的净值、终止日期、终止日期对应的净值、相差天数
+        start_date = dates[0]
+        start_value = values[0]
+        end_value = values[-1]
+        days_diff = (end_date - start_date).days
+
+        if len(filtered) <= min_required and days_diff == 0:
+            returns_year = None
+        else:
+            returns = (end_value - start_value) / start_value
+            returns_year = returns * (365 / days_diff)
+            returns_year = round(returns_year, 4)
+        return returns_year
+
+    # ----------- 估值次数计算相关方法 --------------
+
+    def valuation_count(self, windows=None):
+        """
+        计算多个窗口下的估值次数，并返回包含所有结果的DataFrame
+
+        参数:
+        - window_days_list: list of int, 多个窗口天数，如 [30, 91]
+
+        返回:
+        - counts_df: DataFrame, 每列为对应窗口的估值次数
+        """
+        if windows is None:
+            window_days_list = [x for x in WINDOWS if x not in [0]]
+        period_list = ['month', 'quarter', 'year']
+
+        # 合并周期列表
+        periods_to_calculate = {f'Count_{win}D': win for win in window_days_list}
+        periods_to_calculate.update({f'Count_{period}D': period for period in period_list})
+
+        valuation_count_data = {key: [] for key in ['Date'] + list(periods_to_calculate.keys())}
+
+        for i in range(len(self.net_values_series)):
+            end_date = self.net_values_series.index[i]
+            valuation_count_data['Date'].append(end_date)
+
+            for name, period in periods_to_calculate.items():
+                if isinstance(period, int):  # 如果是天数窗口
+                    counts = self._calculate_valuation_count(end_date=end_date, windows=period)
+                else:  # 如果是时间段
+                    counts = self._calculate_valuation_count(end_date=end_date, period_type=period)
+
+                valuation_count_data[name].append(counts)
+
+        counts_df = pd.DataFrame(valuation_count_data)
+        return counts_df
+
+    def _calculate_valuation_count(self, end_date, windows=None, period_type = None, min_points=None):
+        # 确定起始日期
+        i = self.net_values_series.index.get_loc(end_date)
+        product_start_date = self.net_values_series.index[0]
         if period_type:
             if period_type == 'month':
                 start_date = pd.Timestamp(end_date.year, end_date.month, 1) - pd.Timedelta(days=1)
@@ -88,86 +175,27 @@ class ReturnRiskIndexCalculator:
         else:
             raise ValueError("Must specify either period_type or window_days")
 
-        values = filtered.values
-        dates = filtered.index
+        # 检查数据量是否满足最低要求
+        key = period_type if period_type else windows
+        min_required = {
+            'month': 1,
+            'quarter': 1,
+            'year': 1,
+            'current': 1,
+            7: 7,
+            14: 14,
+            30: 30,  # 对于近1月的数据，估值次数小于12次不计算
+            91: 91,  # 对于近3月的数据，估值次数小于12次不计算
+            182: 182,  # 对于近6月的数据，估值次数小于6次不计算
+            365: 365,  # 对于近1年的数据，估值次数小于12次不计算
+            730: 730,  # 对于近2年的数据，估值次数小于24次不计算
+            1095: 1095  # 对于近3年的数据，估值次数小于36次不计算
+        }.get(key, min_points)
 
-        # 周期内的起始日期
-        start_date = dates[0]
-        start_value = values[0]
-        end_value = values[-1]
-        print(f"start_date: {start_date}, start_value: {start_value}, end_date: {end_date}, end_value: {end_value}")
-
-        if (end_date - start_date).days > windows:
-            returns = (end_value - start_value) / start_value
-            returns_year = returns * (365 / (end_date - start_date).days)
+        if (end_date - product_start_date).days < min_required:
+            return None
         else:
-            returns_year = None
-        # print(returns_year)
-
-
-    def test(self):
-        for i in range(len(self.net_values_series.index)):
-            end_date = self.net_values_series.index[i]
-            a = self._calculate_annualized_returns(end_date=end_date, windows=7)
-
-
-    # ----------- 估值次数计算相关方法 --------------
-
-    def count_valuation(self, windows=None):
-        """
-        计算每个时间点上不同窗口期内的数据点数量
-        """
-        if windows is None:
-            windows = WINDOWS
-
-        result_data = []
-        out_strings = []
-
-        for i in range(len(self.net_values_series)):
-            current_date_str = self.date_objs[i].strftime("%Y%m%d")
-            current_date_obj = self.date_objs[i]
-            row = {"Date": current_date_str}
-            result_list = []
-
-            for win in windows:
-                if win == 0:
-                    count = i + 1
-                    row[f"d_all"] = count
-                    result_list.append(f"d_all:{count}")
-                    continue
-
-                target_start_date = current_date_obj - timedelta(days=win)
-                candidates = [(self.date_objs[j], self.value_list[j]) for j in range(i + 1) if self.date_objs[j] >= target_start_date]
-                count = len(candidates)
-                row[f"d_{win}"] = count
-                result_list.append(f"d_{win}:{count}")
-
-            # 处理月度、季度、年度
-            month_since_begin = current_date_obj.replace(day=1) - timedelta(days=1)
-            quarter_since_begin = get_quarter_days(current_date=current_date_obj)
-            year_since_begin = current_date_obj.replace(month=1, day=1) - timedelta(days=1)
-
-            idx_month = bisect.bisect_left(self.date_objs, month_since_begin)
-            idx_quarter = bisect.bisect_left(self.date_objs, quarter_since_begin)
-            idx_year = bisect.bisect_left(self.date_objs, year_since_begin)
-
-            count_month = len(self.date_objs[idx_month:i + 1])
-            count_quarter = len(self.date_objs[idx_quarter:i + 1])
-            count_year = len(self.date_objs[idx_year:i + 1])
-
-            row["d_month"] = count_month
-            row["d_quarter"] = count_quarter
-            row["d_year"] = count_year
-
-            result_list.append(f"d_month:{count_month}")
-            result_list.append(f"d_quarter:{count_quarter}")
-            result_list.append(f"d_year:{count_year}")
-
-            result_data.append(row)
-            out_strings.append(f"{current_date_str}=>{';'.join(result_list)}")
-
-        df = pd.DataFrame(result_data)
-        return df, "|".join(out_strings)
+            return len(filtered)
 
     def annualized_volatility(self, window_days_list=None, min_points=12):
         """
@@ -361,14 +389,15 @@ class ReturnRiskIndexCalculator:
                 else:  # 如果是时间段
                     max_drawdown, s_date, t_date, d_r_d = self._calculate_max_drawdown(end_date=end_date, period_type=period)
 
-                max_drawdown_data[name].append(max_drawdown)
+                max_drawdown_data[name].append(f"{max_drawdown}(S:{s_date},T:{t_date},DRD:{d_r_d})")
 
         max_drawdown_df = pd.DataFrame(max_drawdown_data)
         return max_drawdown_df
 
-    def _calculate_max_drawdown(self, end_date, period_type=None, windows=None):
+    def _calculate_max_drawdown(self, end_date, period_type=None, windows=None, min_points=None):
         # 确定起始日期
         i = self.net_values_series.index.get_loc(end_date)
+        product_start_date = self.net_values_series.index[0]
         if period_type:
             if period_type == 'month':
                 start_date = pd.Timestamp(end_date.year, end_date.month, 1) - pd.Timedelta(days=1)
@@ -389,37 +418,54 @@ class ReturnRiskIndexCalculator:
         else:
             raise ValueError("Must specify either period_type or window_days")
 
+        # 检查数据量是否满足最低要求
+        key = period_type if period_type else windows
+        min_required = {
+            'month': 1,
+            'quarter': 1,
+            'year': 1,
+            'current': 1,
+            7: 7,
+            14: 14,
+            30: 30,  # 对于近1月的数据，估值次数小于12次不计算
+            91: 91,  # 对于近3月的数据，估值次数小于12次不计算
+            182: 182,  # 对于近6月的数据，估值次数小于6次不计算
+            365: 365,  # 对于近1年的数据，估值次数小于12次不计算
+            730: 730,  # 对于近2年的数据，估值次数小于24次不计算
+            1095: 1095  # 对于近3年的数据，估值次数小于36次不计算
+        }.get(key, min_points)
 
-        values = filtered.values
-        dates = filtered.index
+        if (end_date - product_start_date).days < min_required:
+            return None, None, None, None
+        else:
 
-        peak = values[0]
-        peak_end_date = end_date
-        peak_start_date = dates[0]
-        max_drawdown = 0.0
-        drawdown_start, drawdown_end = peak_start_date, peak_end_date
-        drawdown_repair_days = None
 
-        for j in range(1, len(values)):
-            current_value = values[j]
-            current_date = dates[j]
+            values = filtered.values
+            dates = filtered.index
 
-            if current_value > peak:
-                peak = current_value
-                peak_start_date = current_date
-            else:
-                drawdown = (current_value - peak) / peak
-                if drawdown < max_drawdown:
-                    max_drawdown = drawdown
-                    drawdown_start = peak_start_date
-                    drawdown_end = current_date
-                    drawdown_repair_days = (drawdown_end - drawdown_start).days
+            peak = values[0]
+            peak_end_date = end_date
+            peak_start_date = dates[0]
+            max_drawdown = 0.0
+            drawdown_start, drawdown_end = peak_start_date, peak_end_date
+            drawdown_repair_days = (drawdown_end - drawdown_start).days
 
-        # 处理格式
+            for j in range(1, len(values)):
+                current_value = values[j]
+                current_date = dates[j]
 
-        result_str = f"{max_drawdown:.4f}(S:{drawdown_start.strftime('%Y%m%d')},T:{drawdown_end.strftime('%Y%m%d')},DRD:{drawdown_repair_days})"
+                if current_value > peak:
+                    peak = current_value
+                    peak_start_date = current_date
+                else:
+                    drawdown = (current_value - peak) / peak
+                    if drawdown < max_drawdown:
+                        max_drawdown = drawdown
+                        drawdown_start = peak_start_date
+                        drawdown_end = current_date
+                        drawdown_repair_days = (drawdown_end - drawdown_start).days
 
-        return round(max_drawdown, 4), drawdown_start.strftime('%Y%m%d'), drawdown_end.strftime('%Y%m%d'), drawdown_repair_days
+            return round(max_drawdown, 4), drawdown_start.strftime('%Y%m%d'), drawdown_end.strftime('%Y%m%d'), drawdown_repair_days
 
     # ----------- 卡玛比率计算相关方法 --------------
 
@@ -445,16 +491,16 @@ class ReturnRiskIndexCalculator:
             for name, period in periods_to_calculate.items():
                 if isinstance(period, int):  # 如果是天数窗口
                     max_drawdown, s_date, t_date, d_r_d = self._calculate_max_drawdown(end_date=end_date, windows=period)
-                    # returns = self.annualized_return().loc(end_date, f"d_{period}")
+                    returns = self._calculate_annualized_returns(end_date=end_date, windows=period)
                 else:  # 如果是时间段
-                    # returns = self.annualized_return().loc(end_date, f"d_{period}")
                     max_drawdown, s_date, t_date, d_r_d = self._calculate_max_drawdown(end_date=end_date, period_type=period)
-
-                returns = self.annualized_return()
+                    returns = self._calculate_annualized_returns(end_date=end_date, period_type=period)
 
                 if max_drawdown is not None and returns is not None:
-                    calmer_ratio = returns
-                    # calmer_ratio = returns / abs(min(max_drawdown, 0))
+                    if abs(min(max_drawdown, 0.0)) == 0.0:
+                        calmer_ratio = None
+                    else:
+                        calmer_ratio = returns / abs(min(max_drawdown, 0.0))
                 else:
                     calmer_ratio = None
 
@@ -462,6 +508,95 @@ class ReturnRiskIndexCalculator:
 
         calmer_df = pd.DataFrame(calmer_data)
         return calmer_df
+
+    # ----------- 回撤计算相关方法 --------------
+
+    def _calculator_drawdown(self, end_date, period_type=None, windows=None, min_points=None):
+        # 确定起始日期
+        i = self.net_values_series.index.get_loc(end_date)
+        product_start_date = self.net_values_series.index[0]
+        if period_type:
+            if period_type == 'month':
+                start_date = pd.Timestamp(end_date.year, end_date.month, 1) - pd.Timedelta(days=1)
+            elif period_type == 'quarter':
+                q_start_month = ((end_date.month - 1) // 3) * 3 + 1
+                start_date = pd.Timestamp(end_date.year, q_start_month, 1) - pd.Timedelta(days=1)
+            elif period_type == 'year':
+                start_date = pd.Timestamp(end_date.year, 1, 1) - pd.Timedelta(days=1)
+            else:
+                raise ValueError("Unsupported period_type")
+
+            indexer = self.net_values_series.index.get_indexer([start_date], method='ffill')
+            start_idx = indexer[0] if indexer[0] != -1 else next(
+                (i for i, d in enumerate(self.net_values_series.index) if d >= start_date), None)
+            filtered = self.net_values_series.iloc[start_idx: i]
+        elif windows is not None:
+            start_index = max(0, i - windows)
+            filtered = self.net_values_series.iloc[start_index: i]
+        else:
+            raise ValueError("Must specify either period_type or window_days")
+
+        # 检查数据量是否满足最低要求
+        key = period_type if period_type else windows
+        min_required = {
+            'month': 1,
+            'quarter': 1,
+            'year': 1,
+            'current': 1,
+            7: 7,
+            14: 14,
+            30: 30,  # 对于近1月的数据，估值次数小于12次不计算
+            91: 91,  # 对于近3月的数据，估值次数小于12次不计算
+            182: 182,  # 对于近6月的数据，估值次数小于6次不计算
+            365: 365,  # 对于近1年的数据，估值次数小于12次不计算
+            730: 730,  # 对于近2年的数据，估值次数小于24次不计算
+            1095: 1095  # 对于近3年的数据，估值次数小于36次不计算
+        }.get(key, min_points)
+
+
+        if (end_date - product_start_date).days < min_required:
+            return None
+        else:
+            returns = filtered
+            end_returns = self.net_values_series.values[i]
+            drawdown = min((end_returns - returns) / returns)
+            drawdown = round(drawdown, 4)
+            return drawdown
+
+    def drawdown(self, window=None):
+        """
+        优化后的计算多个窗口下的回撤的方法
+        :return: DataFrame：包含每个时间节点的回撤
+        """
+        if window is None:
+            window_list = [x for x in WINDOWS if x not in [0]]
+        period_list = ['month', 'quarter', 'year']
+
+        # 合并周期列表
+        periods_to_calculate = {f'Drawdown_{win}D': win for win in window_list}
+        periods_to_calculate.update({f'Drawdown_{period}D': period for period in period_list})
+
+        Drawdown_data = {key: [] for key in ['Date'] + list(periods_to_calculate.keys())}
+
+        for i in range(len(self.net_values_series)):
+            end_date = self.net_values_series.index[i]
+            Drawdown_data['Date'].append(end_date)
+
+            for name, period in periods_to_calculate.items():
+                if isinstance(period, int):  # 如果是天数窗口
+                    drawdown = self._calculator_drawdown(end_date=end_date,windows=period)
+                else:  # 如果是时间段
+                    drawdown = self._calculator_drawdown(end_date=end_date,period_type=period)
+
+                Drawdown_data[name].append(drawdown)
+
+        drawdown_df = pd.DataFrame(Drawdown_data)
+        return drawdown_df
+
+    # def test(self):
+    #     for i in range(len(self.net_values_series)):
+    #         end_date = self.net_values_series.index[i]
+    #         a = self._calculate_valuation_count(end_date=end_date, period_type='month')
 
 
 
