@@ -49,7 +49,7 @@ class ReturnRiskIndexCalculator:
         - returns_df: DataFrame, 每列为对应窗口的收益率
         """
         if windows is None:
-            window_days_list = [x for x in WINDOWS if x not in [0]]
+            window_days_list = [x for x in WINDOWS]
         period_list = ['month', 'quarter', 'year', 'current']
 
         # 合并周期列表
@@ -75,7 +75,12 @@ class ReturnRiskIndexCalculator:
 
     def _calculate_annualized_returns(self, end_date, period_type=None, windows=None, min_points=None):
         # 确定起始日期
-        start_date = self._get_start_date(end_date=end_date, period_type=period_type, windows=windows)
+        product_start_date = self.net_values_series.index[0]
+
+        if windows == 0:
+            start_date = product_start_date
+        else:
+            start_date = self._get_start_date(end_date, period_type=period_type, windows=windows)
 
         filtered = self._filter_data_by_dates(start_date=start_date, end_date=end_date)
 
@@ -86,13 +91,14 @@ class ReturnRiskIndexCalculator:
             'quarter': 1,
             'year': 1,
             'current': 1,
+            0: 1,
             7: 7,
             14: 14,
-            30: 30,  # 对于近1月的数据，估值次数小于12次不计算
-            91: 91,  # 对于近3月的数据，估值次数小于12次不计算
-            182: 182,  # 对于近6月的数据，估值次数小于6次不计算
-            365: 365,  # 对于近1年的数据，估值次数小于12次不计算
-            730: 730,  # 对于近2年的数据，估值次数小于24次不计算
+            30: 30,     # 对于近1月的数据，估值次数小于12次不计算
+            91: 91,     # 对于近3月的数据，估值次数小于12次不计算
+            182: 182,   # 对于近6月的数据，估值次数小于6次不计算
+            365: 365,   # 对于近1年的数据，估值次数小于12次不计算
+            730: 730,   # 对于近2年的数据，估值次数小于24次不计算
             1095: 1095  # 对于近3年的数据，估值次数小于36次不计算
         }.get(key, min_points)
 
@@ -126,7 +132,7 @@ class ReturnRiskIndexCalculator:
         - counts_df: DataFrame, 每列为对应窗口的估值次数
         """
         if windows is None:
-            window_days_list = [x for x in WINDOWS if x not in [0]]
+            window_days_list = [x for x in WINDOWS]
         period_list = ['month', 'quarter', 'year']
 
         # 合并周期列表
@@ -154,7 +160,10 @@ class ReturnRiskIndexCalculator:
         # 确定起始日期
         product_start_date = self.net_values_series.index[0]
 
-        start_date = self._get_start_date(end_date=end_date, period_type=period_type, windows=windows)
+        if windows == 0:
+            start_date = product_start_date
+        else:
+            start_date = self._get_start_date(end_date, period_type=period_type, windows=windows)
 
         filtered = self._filter_data_by_dates(start_date=start_date, end_date=end_date)
 
@@ -165,7 +174,8 @@ class ReturnRiskIndexCalculator:
             'quarter': 1,
             'year': 1,
             'current': 1,
-            7: 7,
+            0: 1,
+            7: 0,
             14: 14,
             30: 30,  # 对于近1月的数据，估值次数小于12次不计算
             91: 91,  # 对于近3月的数据，估值次数小于12次不计算
@@ -175,7 +185,7 @@ class ReturnRiskIndexCalculator:
             1095: 1095  # 对于近3年的数据，估值次数小于36次不计算
         }.get(key, min_points)
 
-        if (end_date - product_start_date).days < min_required:
+        if (end_date - product_start_date).days < 0:
             return None
         else:
             return len(filtered)
@@ -192,7 +202,7 @@ class ReturnRiskIndexCalculator:
         - volatility_df: DataFrame, 每列为对应窗口的波动率
         """
         if window_days_list is None:
-            window_days_list = [x for x in WINDOWS if x not in [7, 14, 0]]
+            window_days_list = [x for x in WINDOWS if x not in [7, 14]]
         period_list = ['month', 'quarter', 'year']
 
         # 合并周期列表
@@ -207,7 +217,7 @@ class ReturnRiskIndexCalculator:
 
             for name, period in periods_to_calculate.items():
                 if isinstance(period, int):  # 如果是天数窗口
-                    monthly_returns, r_t_day = self._calculate_volatility(end_date=end_date, window_days=period)
+                    monthly_returns, r_t_day = self._calculate_volatility(end_date=end_date, windows=period)
                 else:  # 如果是时间段
                     monthly_returns, r_t_day = self._calculate_volatility(end_date=end_date, period_type=period)
 
@@ -216,8 +226,9 @@ class ReturnRiskIndexCalculator:
         volatility_df = pd.DataFrame(volatility_data)
         return volatility_df
 
-    def _calculate_volatility(self, end_date, period_type=None, window_days=None, freq_multiplier=365, min_points=12):
+    def _calculate_volatility(self, end_date, period_type=None, windows=None, freq_multiplier=365, min_points=12):
         series = self.net_values_series[:end_date]
+        product_start_date = self.net_values_series.index[0]
         if len(series) < 2:
             return None, None
 
@@ -240,19 +251,23 @@ class ReturnRiskIndexCalculator:
                 return None, None
             filtered = series.iloc[start_idx:]
 
-        elif window_days is not None:
+        elif windows is not None:
             i = series.index.get_loc(end_date)
-            start_index = max(0, i - window_days)
-            filtered = series.iloc[start_index:i + 1]
+            if windows == 0:
+                filtered = series.iloc[0:i + 1]
+            else:
+                start_index = max(0, i - windows)
+                filtered = series.iloc[start_index:i + 1]
         else:
             raise ValueError("Must specify either period_type or window_days")
 
         # 检查数据量是否满足最低要求
-        key = period_type if period_type else window_days
+        key = period_type if period_type else windows
         min_required = {
             'month': 12,
             'quarter': 12,
             'year': 12,
+            0: 182,
             30: 12,                 # 对于近1月的数据，估值次数小于12次不计算
             91: 12,                 # 对于近3月的数据，估值次数小于12次不计算
             182: 6,                 # 对于近6月的数据，估值次数小于6次不计算
@@ -267,6 +282,8 @@ class ReturnRiskIndexCalculator:
         returns = filtered.pct_change().dropna()
         date_diffs = pd.Series(filtered.index).diff().dt.days.replace(0, np.nan).fillna(1)
 
+        n = int(len(filtered) / 182)
+
         # 根据窗口大小选择合适的频率调整方法
         """
         近1月年化波动率：如果近1月估值次数大于等于12次，按照日化收益率计算
@@ -280,6 +297,7 @@ class ReturnRiskIndexCalculator:
             'month': [(12, freq_multiplier)],
             'quarter': [(36, freq_multiplier), (12, 52)],
             'year': [(144, freq_multiplier), (48, 52), (12, 12)],
+            0: [(72 * n, freq_multiplier), (24 * n, 52), (6 * n, 12)],
             91: [(36, freq_multiplier), (12, 52)],
             182: [(72, freq_multiplier), (24, 52), (6, 12)],
             365: [(144, freq_multiplier), (48, 52), (12, 12)],
@@ -315,7 +333,7 @@ class ReturnRiskIndexCalculator:
         :return: DataFrame：包含每个时间节点的夏普比率
         """
         if window_days_list is None:
-            window_days_list = [x for x in WINDOWS if x not in [7, 14, 0]]
+            window_days_list = [x for x in WINDOWS if x not in [7, 14]]
         period_list = ['month', 'quarter', 'year']
 
         # 合并周期列表
@@ -353,7 +371,7 @@ class ReturnRiskIndexCalculator:
         :return: DataFrame：包含每个时间节点的最大回撤
         """
         if window is None:
-            window_list = [x for x in WINDOWS if x not in [0]]
+            window_list = [x for x in WINDOWS]
         period_list = ['month', 'quarter', 'year']
 
         # 合并周期列表
@@ -380,7 +398,10 @@ class ReturnRiskIndexCalculator:
     def _calculate_max_drawdown(self, end_date, period_type=None, windows=None, min_points=None):
         # 确定起始日期
         product_start_date = self.net_values_series.index[0]
-        start_date = self._get_start_date(end_date=end_date, period_type=period_type, windows=windows)
+        if windows == 0:
+            start_date = product_start_date
+        else:
+            start_date = self._get_start_date(end_date=end_date, period_type=period_type, windows=windows)
 
         filtered = self._filter_data_by_dates(start_date=start_date, end_date=end_date)
 
@@ -391,6 +412,7 @@ class ReturnRiskIndexCalculator:
             'quarter': 1,
             'year': 1,
             'current': 1,
+            0: 1,
             7: 7,
             14: 14,
             30: 30,  # 对于近1月的数据，估值次数小于12次不计算
@@ -441,7 +463,7 @@ class ReturnRiskIndexCalculator:
         :return: DataFrame：包含每个时间节点的卡玛比率
         """
         if windows is None:
-            window_days_list = [x for x in WINDOWS if x not in [0]]
+            window_days_list = [x for x in WINDOWS]
         period_list = ['month', 'quarter', 'year']
 
         # 合并周期列表
@@ -481,6 +503,7 @@ class ReturnRiskIndexCalculator:
         # 确定起始日期
         i = self.net_values_series.index.get_loc(end_date)
         product_start_date = self.net_values_series.index[0]
+
         if period_type:
             if period_type == 'month':
                 start_date = pd.Timestamp(end_date.year, end_date.month, 1) - pd.Timedelta(days=1)
@@ -497,8 +520,11 @@ class ReturnRiskIndexCalculator:
                 (i for i, d in enumerate(self.net_values_series.index) if d >= start_date), None)
             filtered = self.net_values_series.iloc[start_idx: i]
         elif windows is not None:
-            start_index = max(0, i - windows)
-            filtered = self.net_values_series.iloc[start_index: i]
+            if windows == 0:
+                filtered = self.net_values_series.iloc[0: i]
+            else:
+                start_index = max(0, i - windows)
+                filtered = self.net_values_series.iloc[start_index: i]
         else:
             raise ValueError("Must specify either period_type or window_days")
 
@@ -509,6 +535,7 @@ class ReturnRiskIndexCalculator:
             'quarter': 1,
             'year': 1,
             'current': 1,
+            0: 0,
             7: 7,
             14: 14,
             30: 30,  # 对于近1月的数据，估值次数小于12次不计算
@@ -520,7 +547,7 @@ class ReturnRiskIndexCalculator:
         }.get(key, min_points)
 
 
-        if (end_date - product_start_date).days < min_required:
+        if (end_date - product_start_date).days < min_required or end_date == product_start_date:
             return None
         else:
             returns = filtered
@@ -535,7 +562,7 @@ class ReturnRiskIndexCalculator:
         :return: DataFrame：包含每个时间节点的回撤
         """
         if window is None:
-            window_list = [x for x in WINDOWS if x not in [0]]
+            window_list = [x for x in WINDOWS]
         period_list = ['month', 'quarter', 'year']
 
         # 合并周期列表
@@ -559,10 +586,10 @@ class ReturnRiskIndexCalculator:
         drawdown_df = pd.DataFrame(Drawdown_data)
         return drawdown_df
 
-    # def test(self):
-    #     for i in range(len(self.net_values_series)):
-    #         end_date = self.net_values_series.index[i]
-    #         a = self._calculate_valuation_count(end_date=end_date, period_type='month')
+    def test(self):
+        for i in range(len(self.net_values_series)):
+            end_date = self.net_values_series.index[i]
+            a = self._calculate_volatility(end_date=end_date, windows=0)
 
 
 
