@@ -591,5 +591,17 @@ class ReturnRiskIndexCalculator:
             end_date = self.net_values_series.index[i]
             a = self._calculate_volatility(end_date=end_date, windows=0)
 
+    def calculate_all_metrics(self):
+        """
+        计算所有需要的指标，并返回一个包含所有指标结果的字典
+        """
+        return {
+            'annualized_volatility': self.annualized_volatility(),
+            'valuation_count': self.valuation_count(),
+            'annualized_return': self.annualized_return(),
+            'drawdown': self.drawdown()
+            # 可以继续添加其他指标...
+        }
+
 
 
