@@ -35,38 +35,80 @@ def process_product_partition_with_calculator(partition):
     
     output = []
 
-    metrics_methods = ReturnRiskIndexCalculator.get_all_metrics()
+    # metrics_methods = ReturnRiskIndexCalculator.get_all_metrics()
+
+    all_combined_dfs = []
 
     for prod_reg_code, items in grouped.items():
         dates = [item[0] for item in items]
         net_vals = [item[1] for item in items]
         series = pd.Series(net_vals, index=pd.to_datetime(dates))
+
+        # 使用统一接口
         calculator = ReturnRiskIndexCalculator(series)
+        all_metrics = calculator.calculate_all_metrics()
 
-        metrics_results = {}
+        main_df = None
+        added_metrics = {}
 
-        for method_name in metrics_methods:
-            try:
-                func = getattr(calculator, method_name)
-                result = func()
-                metrics_results[method_name] = result
-            except Exception as e:
-                metrics_results[method_name] = None
-
-        for method_name, result in metrics_results.items():
+        for metric_name, result in all_metrics.items():
             if isinstance(result, pd.DataFrame):
-                # 如果是DataFrame，每一行代表一个单独的结果
-                for _, row in result.iterrows():
-                    row_data = (prod_reg_code, method_name, *[row[col] for col in result.columns])
-                    output.append(row_data)
+                if main_df is None:
+                    result['prod_reg_code'] = prod_reg_code
+                    cols = result.columns.tolist()
+                    date_idx = cols.index('Date')
+                    cols = ['prod_reg_code'] + cols[:date_idx + 1] + cols[date_idx + 1:-1]
+                    main_df = result[cols]
+                    added_metrics[metric_name] = result.iloc[:, -1]  # 假设最后一列是指标值
+                else:
+                    # 合并其他 DataFrame 的指标值，不重复 Date 和 prod_reg_code
+                    col_name = f"{metric_name}"
+                    main_df[col_name] = result.iloc[:, -1]
             elif isinstance(result, (int, float)):
-                # 如果是单个数值，则直接添加
-                row_data = (prod_reg_code, method_name, result)
-                output.append(row_data)
+                # 标量指标：添加为新列
+                col_name = f"{metric_name}"
+                main_df[col_name] = result
             else:
-                # 处理其他类型或None的情况
-                row_data = (prod_reg_code, method_name, None)
-                output.append(row_data)
+                # 处理异常情况
+                col_name = f"{metric_name}"
+                main_df[col_name] = None
+        if main_df is not None:
+            for _, row in main_df.iterrows():
+                output.append(tuple(row.values))
+            #     for _, row in result.iterrows():
+            #         row_data = (prod_reg_code, metric_name, *[row[col] for col in result.columns])
+            #         output.append(row_data)
+            # elif isinstance(result, (int, float, type(None))):
+            #     row_data = (prod_reg_code, metric_name, result)
+            #     output.append(row_data)
+            # else:
+            #     row_data = (prod_reg_code, metric_name, None)
+            #     output.append(row_data)
+
+        # metrics_results = {}
+        #
+        # for method_name in metrics_methods:
+        #     try:
+        #         func = getattr(calculator, method_name)
+        #         result = func()
+        #         metrics_results[method_name] = result
+        #     except Exception as e:
+        #         metrics_results[method_name] = None
+        #
+        # for method_name, result in metrics_results.items():
+        #     if isinstance(result, pd.DataFrame):
+        #         # 如果是DataFrame，每一行代表一个单独的结果
+        #         for _, row in result.iterrows():
+        #             row_data = (prod_reg_code, method_name, *[row[col] for col in result.columns])
+        #             output.append(row_data)
+        #     elif isinstance(result, (int, float)):
+        #         # 如果是单个数值，则直接添加
+        #         row_data = (prod_reg_code, method_name, result)
+        #         output.append(row_data)
+        #     else:
+        #         # 处理其他类型或None的情况
+        #         row_data = (prod_reg_code, method_name, None)
+        #         output.append(row_data)
     
     return output
 
@@ -95,9 +137,25 @@ def build_spark_session():
     print('Spark session created')
     return spark
 
-def create_spark_session(input_df):
+def create_spark_session():
     spark = build_spark_session()
-    repartitioned_df = spark.createDataFrame(input_df)
+
+    df = spark.read \
+        .format("jdbc") \
+        .option("url", "jdbc:mysql://your_host:3306/your_db") \
+        .option("dbtable", "your_table") \
+        .option("user", "username") \
+        .option("password", "password") \
+        .option("driver", "com.mysql.cj.jdbc.Driver") \
+        .load()
+
+    df = df.select(
+        df["prod_reg_code"].cast(StringType()),
+        df["date"].cast(DateType()),
+        df["net_val"].cast(DoubleType())
+    ).dropna()
+
+    repartitioned_df = spark.createDataFrame(df)
     print('repartitioned dataframe created')
     repartitioned_df = repartitioned_df.repartition("prod_reg_code")
     repartitioned_df.show()
