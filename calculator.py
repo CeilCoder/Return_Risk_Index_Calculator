@@ -38,7 +38,7 @@ class ReturnRiskIndexCalculator:
 
     # ----------- 收益率计算相关方法 --------------
 
-    def annualized_return(self, windows=None):
+    def calculate_annualized_return(self, windows=None):
         """
         计算多个窗口下的年化收益率，并返回包含所有结果的DataFrame
 
@@ -121,7 +121,7 @@ class ReturnRiskIndexCalculator:
 
     # ----------- 估值次数计算相关方法 --------------
 
-    def valuation_count(self, windows=None):
+    def calculate_valuation_count(self, windows=None):
         """
         计算多个窗口下的估值次数，并返回包含所有结果的DataFrame
 
@@ -190,7 +190,7 @@ class ReturnRiskIndexCalculator:
         else:
             return len(filtered)
 
-    def annualized_volatility(self, window_days_list=None, min_points=12):
+    def calculate_annualized_volatility(self, window_days_list=None, min_points=12):
         """
         计算多个窗口下的年化波动率，并返回包含所有结果的DataFrame
 
@@ -327,7 +327,7 @@ class ReturnRiskIndexCalculator:
 
     # ----------- 夏普比率计算相关方法 --------------
 
-    def annualized_sharpe_ratio(self, window_days_list=None):
+    def calculate_annualized_sharpe_ratio(self, window_days_list=None):
         """
         优化后的计算多个窗口下的夏普比率的方法
         :return: DataFrame：包含每个时间节点的夏普比率
@@ -365,7 +365,7 @@ class ReturnRiskIndexCalculator:
 
     # ----------- 最大回撤计算相关方法 --------------
 
-    def max_drawdown(self, window=None):
+    def calculate_max_drawdown(self, window=None):
         """
         优化后的计算多个窗口下的最大回撤的方法
         :return: DataFrame：包含每个时间节点的最大回撤
@@ -457,7 +457,7 @@ class ReturnRiskIndexCalculator:
 
     # ----------- 卡玛比率计算相关方法 --------------
 
-    def annualized_calmer_ratio(self, windows=None):
+    def calculate_annualized_calmer_ratio(self, windows=None):
         """
         优化后的计算多个窗口下的卡玛比率的方法
         :return: DataFrame：包含每个时间节点的卡玛比率
@@ -556,7 +556,7 @@ class ReturnRiskIndexCalculator:
             drawdown = round(drawdown, 4)
             return drawdown
 
-    def drawdown(self, window=None):
+    def calculate_drawdown(self, window=None):
         """
         优化后的计算多个窗口下的回撤的方法
         :return: DataFrame：包含每个时间节点的回撤
@@ -602,6 +602,10 @@ class ReturnRiskIndexCalculator:
             'drawdown': self.drawdown()
             # 可以继续添加其他指标...
         }
+
+    @staticmethod
+    def get_all_metrics():
+        return [method for method in dir(ReturnRiskIndexCalculator) if method.startswith('calculate_')]
 
 
 

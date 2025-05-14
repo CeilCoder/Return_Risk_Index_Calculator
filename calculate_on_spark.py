@@ -6,13 +6,10 @@
 @IDE  : PyCharm
 """
 
-from pyspark.sql import SparkSession
 from pyspark.sql import *
 import os
-
-from pyspark.sql.types import StructField, StringType, FloatType
-
-from config import WINDOWS
+from pyspark.sql.types import *
+from config import WINDOWS, SPARK_CONFIG, JDBC_CONFIG, OUTPUT_SCHEMA
 from calculator import ReturnRiskIndexCalculator
 import pandas as pd
 
@@ -25,11 +22,7 @@ def process_product_partition_with_calculator(partition):
     data = list(partition)
     if not data:
         return []
-    
-    metrics_to_calculate = [
-        'annualized_return',
-        'valuation_counts'
-    ]
+
     
     grouped = {}
     for row in data:
@@ -41,75 +34,90 @@ def process_product_partition_with_calculator(partition):
         grouped[prod_reg_code].append((date, net_val))
     
     output = []
+
+    metrics_methods = ReturnRiskIndexCalculator.get_all_metrics()
+
     for prod_reg_code, items in grouped.items():
         dates = [item[0] for item in items]
         net_vals = [item[1] for item in items]
         series = pd.Series(net_vals, index=pd.to_datetime(dates))
         calculator = ReturnRiskIndexCalculator(series)
-        result = calculator.annualized_return()
-        if not result.empty:
-            for _, row in result.iterrows():
-                row_data = (prod_reg_code, *row.tolist())
+
+        metrics_results = {}
+
+        for method_name in metrics_methods:
+            try:
+                func = getattr(calculator, method_name)
+                result = func()
+                metrics_results[method_name] = result
+            except Exception as e:
+                metrics_results[method_name] = None
+
+        for method_name, result in metrics_results.items():
+            if isinstance(result, pd.DataFrame):
+                # 如果是DataFrame，每一行代表一个单独的结果
+                for _, row in result.iterrows():
+                    row_data = (prod_reg_code, method_name, *[row[col] for col in result.columns])
+                    output.append(row_data)
+            elif isinstance(result, (int, float)):
+                # 如果是单个数值，则直接添加
+                row_data = (prod_reg_code, method_name, result)
                 output.append(row_data)
-        else:
-            row_data = (prod_reg_code, *([None] * result.shape[1]))
-            output.append(row_data)
+            else:
+                # 处理其他类型或None的情况
+                row_data = (prod_reg_code, method_name, None)
+                output.append(row_data)
     
     return output
 
+
+def build_spark_session():
+    """
+    构建并返回一个配置好的 SparkSession 实例。
+    """
+    builder = SparkSession.builder \
+        .appName(SPARK_CONFIG["app_name"]) \
+        .config("spark.hadoop.hive.metastore.uris", SPARK_CONFIG["hive_metastore_uris"]) \
+        .config("spark.driver.extraClassPath", SPARK_CONFIG["extra_class_path"]) \
+        .config("spark.sql.warehouse.dir", SPARK_CONFIG["warehouse_dir"]) \
+        .config("hive.exec.scratchdir", SPARK_CONFIG["scratch_dir"]) \
+        .config("spark.driver.extraJavaOptions", SPARK_CONFIG["driver_java_options"]) \
+        .config("spark.executor.extraJavaOptions", SPARK_CONFIG["executor_java_options"]) \
+        .config("spark.sql.shuffle.partitions", str(SPARK_CONFIG["shuffle_partitions"])) \
+        .config("spark.default.parallelism", str(SPARK_CONFIG["parallelism"])) \
+        .config("spark.driver.maxResultSize", SPARK_CONFIG["driver_max_result_size"]) \
+        .config("spark.sql.debug.maxToStringFields", str(SPARK_CONFIG["debug_max_to_string_fields"]))
+
+    if SPARK_CONFIG["enable_hive_support"]:
+        builder = builder.enableHiveSupport()
+
+    spark = builder.getOrCreate()
+    print('Spark session created')
+    return spark
+
 def create_spark_session(input_df):
-    spark_session = (SparkSession.builder
-                     .appName('metrics_calculate')
-                     .config("spark.hadoop.hive.metastore.uris", "thrift://192.168.1.1:21088")
-                     .config("spark.driver.extraClassPath", "/opt/hadoop/postgresql.jar")
-                     .config("spark.sql.warehouse.dir", "/mnt/warehouse/spark")
-                     .config("hive.exec.scratchdir", "/mnt/warehouse/spark")
-                     .config("spark.driver.extraJavaOptions", "-Dfile.encoding=UTF-8")
-                     .config("spark.executor.extraJavaOptions", "-Dfile.encoding=UTF-8")
-                     .config("spark.sql.shuffle.partitions", "5000")
-                     .config("spark.default.parallelism", "2000")
-                     .config("spark.driver.maxResultSize", "4096m")
-                     .config("spark.sql.debug.maxToStringFields", "1000")
-                     .enableHiveSupport()
-                     .getOrCreate())
-    print('spark session created')
-    repartitioned_df = spark_session.createDataFrame(input_df)
+    spark = build_spark_session()
+    repartitioned_df = spark.createDataFrame(input_df)
     print('repartitioned dataframe created')
     repartitioned_df = repartitioned_df.repartition("prod_reg_code")
     repartitioned_df.show()
     print('repartitioned dataframe show')
     
-    fields = [
-        StructField("prod_reg_code", StringType(), True),
-        StructField("net_val_date", StringType(), True),
-        StructField("d7_returns", FloatType(), True),
-        StructField("d14_returns", FloatType(), True),
-        StructField("m1_returns", FloatType(), True),
-        StructField("m3_returns", FloatType(), True),
-        StructField("m6_returns", FloatType(), True),
-        StructField("y1_returns", FloatType(), True),
-    ]
-    schema = StringType(fields)
+    schema = StructType([StructField(name, data_type, True) for name, data_type in OUTPUT_SCHEMA])
     print('repartitioned dataframe schema')
     
     final_df = repartitioned_df.rdd.mapPartitions(process_product_partition_with_calculator).toDF(schema)
     print('final dataframe created')
     
-    jdbc_url = "kdbc:postgresql://192.168.1.1:5432/postgres"
-    table = "bdm.returns"
-    username = "monitor"
-    password = "monitor"
-    driver = "org.postgresql.Driver"
-    
     (final_df.write.format("jdbc")
-     .option("url", jdbc_url)
-     .option("dbtable", table)
-     .option("user", username)
-     .option("password", password)
-     .option("driver", driver)
-     .option("numPartitions", 100)
-     .option("batchsize", 10000)
-     .mode("overwrite")
+     .option("url", JDBC_CONFIG["url"])
+     .option("dbtable", JDBC_CONFIG["table"])
+     .option("user", JDBC_CONFIG["username"])
+     .option("password", JDBC_CONFIG["password"])
+     .option("driver", JDBC_CONFIG["driver"])
+     .option("numPartitions", JDBC_CONFIG["numPartitions"])
+     .option("batchsize", JDBC_CONFIG["batchsize"])
+     .mode(JDBC_CONFIG["mode"])
      .save())
     
-    spark_session.stop()
+    spark.stop()
