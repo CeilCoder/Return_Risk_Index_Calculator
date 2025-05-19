@@ -1,11 +1,16 @@
-from data_parser import parse_input_to_series
-from calculator import ReturnRiskIndexCalculator
+from data_parser import parse_input_to_series, parse_input_to_dict
+# from calculator import ReturnRiskIndexCalculator
 from config import INPUT_STR
+from calculator_by_list import ReturnRiskCalculator
 
 
 def main():
-    series = parse_input_to_series(INPUT_STR)
-    calculator = ReturnRiskIndexCalculator(series)
+    # series = parse_input_to_series(INPUT_STR)
+    dict = parse_input_to_dict(INPUT_STR)
+    # print(dict)
+    calculator = ReturnRiskCalculator(dict)
+    a = calculator._calculate_volatility(end_date='20250327', windows=30)
+    print(a)
 
     # # 计算年化收益率
     # annualized_returns_df = calculator.annualized_return()
@@ -16,8 +21,8 @@ def main():
     # print("Valuation Count DataFrame:\n", valuation_df[['Date', 'Count_0D']])
     #
     # 年化波动率计算
-    volatility = calculator.annualized_volatility()
-    print("Volatility Returns:\n", volatility[['Date', 'Volatility_0D']])
+    # volatility = calculator.annualized_volatility()
+    # print("Volatility Returns:\n", volatility[['Date', 'Volatility_0D']])
     #
     # # 夏普比率计算
     # sharpe_ratio = calculator.annualized_sharpe_ratio()

@@ -12,3 +12,11 @@ def parse_input_to_series(input_str):
     values = [parsed[d] for d in dates]
     date_index = pd.to_datetime(dates)
     return pd.Series(values, index=date_index)
+
+def parse_input_to_dict(input_str):
+    parsed = {}
+    for item in input_str.split(","):
+        date_str, value_str = item.split("^")
+        parsed[date_str] = float(value_str)
+
+    return parsed
